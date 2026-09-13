@@ -55,11 +55,12 @@ number against a teams list, and export the results.
 
 ## The reader DLL
 
-The app talks to the physical UHF reader through `UHFPrimeReader.dll` (and
-its `hidapi.dll` dependency), a vendor-provided Windows DLL, via `ctypes`
-(`reader_api.py`). Both DLLs are bundled in `lib/` and loaded from there
-directly (`os.add_dll_directory` makes sure `UHFPrimeReader.dll` finds
-`hidapi.dll` alongside it) — no need to add anything to `PATH`.
+The physical reader is a **Chafon CF561 UHF reader module**. The app talks
+to it through `UHFPrimeReader.dll` (and its `hidapi.dll` dependency), a
+vendor-provided Windows DLL, via `ctypes` (`reader_api.py`). Both DLLs are
+bundled in `lib/` and loaded from there directly (`os.add_dll_directory`
+makes sure `UHFPrimeReader.dll` finds `hidapi.dll` alongside it) — no need
+to add anything to `PATH`.
 
 **Important: both DLLs are 32-bit (PE i386).** This only works on Windows,
 and only with a **32-bit ("x86") Python interpreter**, even on 64-bit

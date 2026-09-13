@@ -4,6 +4,8 @@ functions (Open/Close/GetDevicePara/SetDevicePara/Inventory/...). This only
 works on Windows, with UHFPrimeReader.dll (and its hidapi.dll dependency)
 next to the executable or on PATH.
 
+The physical RFID reader this talks to is a Chafon CF561 UHF reader module.
+
 `Reader` is a thin, Pythonic wrapper around those calls.
 """
 import ctypes
