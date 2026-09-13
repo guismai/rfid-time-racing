@@ -62,7 +62,8 @@ bundled in `lib/` and loaded from there directly (`os.add_dll_directory`
 makes sure `UHFPrimeReader.dll` finds `hidapi.dll` alongside it) — no need
 to add anything to `PATH`.
 
-**Important: both DLLs are 32-bit (PE i386).** This only works on Windows,
+**Important: both DLLs, as supplied by Chafon for the CF561, are 32-bit
+(PE i386).** This only works on Windows,
 and only with a **32-bit ("x86") Python interpreter**, even on 64-bit
 Windows. With a 64-bit Python, `ctypes.WinDLL(...)` fails with *"%1 is not
 a valid Win32 application"*. On Linux/macOS the modules still import fine
