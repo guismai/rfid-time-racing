@@ -86,14 +86,30 @@ def credentials_path_for(base_dir: str) -> str:
     return os.path.join(base_dir, "credentials.json")
 
 
-def _duration_formula(row: int) -> str:
+def _formula_separator(locale: str) -> str:
+    """Google Sheets formula argument separator depends on the spreadsheet's
+    locale: English-family locales use a comma, most others (French,
+    German, Spanish, etc.) use a semicolon. Writing a formula with the
+    wrong separator via USER_ENTERED doesn't error at write time — it just
+    fails to parse later, showing "#ERROR!" ("Erreur d'analyse de formule")
+    no matter how correct the underlying logic is."""
+    if not locale:
+        return ","
+    comma_locales = {"en", "en_us", "en_gb", "en_ca", "en_au", "en_in", "en_ie", "en_nz", "en_za"}
+    lang = locale.lower().split("_")[0]
+    if locale.lower() in comma_locales or lang == "en":
+        return ","
+    return ";"
+
+
+def _duration_formula(row: int, sep: str = ",") -> str:
     """Duration formula for a given row: a plain D - C subtraction. Both
     cells are always written as real Sheets date-time serial numbers (see
     _to_sheets_serial / _format_datetime_columns), so a simple subtraction
     is enough; the E column is formatted as a duration ([h]:mm:ss) so
     Sheets displays the result as elapsed time on its own."""
     c, d = f"C{row}", f"D{row}"
-    return f'=IF(AND({c}<>"",{d}<>""),{d}-{c},"")'
+    return f'=IF(AND({c}<>""{sep}{d}<>""){sep}{d}-{c}{sep}"")'
 
 
 class GoogleSheetError(Exception):
@@ -142,6 +158,7 @@ class GoogleSheetExporter:
         self._row_cache: dict[str, dict[str, int]] = {}
         self._formatted_tabs: set[str] = set()
         self._sheet_ids: dict[str, int] = {}
+        self._formula_sep = ","
 
     # ------------------------------------------------------------------------------------
     # OAuth
@@ -303,6 +320,7 @@ class GoogleSheetExporter:
         """Makes sure a 'Round <N>' tab exists (with the header row), returns its name."""
         tab_name = f"Round {round_num}"
         meta = self._api("GET", f"{SHEETS_API}/{self.spreadsheet_id}")
+        self._formula_sep = _formula_separator(meta.get("properties", {}).get("locale", ""))
         sheet_id = None
         for s in meta.get("sheets", []):
             if s["properties"]["title"] == tab_name:
@@ -431,6 +449,6 @@ class GoogleSheetExporter:
                   file=sys.stderr)
             self._values_update(
                 tab_name, f"E{row}",
-                [[_duration_formula(row)]],
+                [[_duration_formula(row, self._formula_sep)]],
             )
 
