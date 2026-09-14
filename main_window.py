@@ -53,7 +53,19 @@ else:
     _APP_DIR = _PERSIST_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DESKTOP_DIR = os.path.join(os.path.expanduser("~"), "Desktop")
-DEFAULT_TEAMS_FILE = os.path.join(DESKTOP_DIR, "teams.csv")
+DEFAULT_APP_DIR = os.path.join(DESKTOP_DIR, "RFID Time Racing")
+DEFAULT_RESULTS_DIR = os.path.join(DEFAULT_APP_DIR, "Results")
+DEFAULT_TEAMS_DIR = os.path.join(DEFAULT_APP_DIR, "Teams")
+DEFAULT_TEAMS_FILE = os.path.join(DEFAULT_TEAMS_DIR, "default.csv")
+
+
+def _ensure_default_folders():
+    """Creates Desktop/RFID Time Racing/{Results,Teams} if they don't exist yet."""
+    for path in (DEFAULT_APP_DIR, DEFAULT_RESULTS_DIR, DEFAULT_TEAMS_DIR):
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError:
+            pass  # e.g. Desktop not writable/present — fall back gracefully
 
 
 class MessageType:
@@ -92,7 +104,10 @@ class App(tk.Tk):
         self.race_csv_writer = None
         self.race_csv_path: str | None = None
         self.teams_file_path: str | None = None
-        self.output_dir_path: str | None = DESKTOP_DIR if os.path.isdir(DESKTOP_DIR) else None
+        _ensure_default_folders()
+        self.output_dir_path: str | None = (
+            DEFAULT_RESULTS_DIR if os.path.isdir(DEFAULT_RESULTS_DIR) else None
+        )
 
         # Live Google Sheet export (see gsheet_export.py)
         self.gsheet_exporter: GoogleSheetExporter | None = None
@@ -114,7 +129,6 @@ class App(tk.Tk):
         self.cmb_region.set("Europe")  # default region
         self.on_region_changed()
 
-        self._set_button_color(self.btn_output_dir, self.output_dir_path is not None)
         self._auto_load_teams_file()
         self.after(200, self._auto_connect_usb)
 
@@ -356,12 +370,12 @@ class App(tk.Tk):
         self.spn_round.pack(side=tk.LEFT)
 
         # --- teams.csv / output folder (prerequisites for Start) ---------------------------
-        self.btn_teams_file = tk.Button(top, text="Select teams.csv", width=16,
+        self.btn_teams_file = tk.Button(top, text="Teams", width=16,
                                          command=self.on_select_teams_file)
         self.btn_teams_file.grid(row=0, column=2, padx=4, pady=4, sticky="w")
         self._add_tooltip(self.btn_teams_file, lambda: self.teams_file_path or "No file selected")
 
-        self.btn_output_dir = tk.Button(top, text="Select output folder", width=18,
+        self.btn_output_dir = tk.Button(top, text="Results folder", width=18,
                                          command=self.on_select_output_dir)
         self.btn_output_dir.grid(row=0, column=3, padx=4, pady=4, sticky="w")
         self._add_tooltip(self.btn_output_dir, lambda: self.output_dir_path or "No folder selected")
@@ -386,14 +400,7 @@ class App(tk.Tk):
                                           command=lambda: self._toggle_popup(self.freq_window))
         self.btn_toggle_freq.grid(row=0, column=7, padx=4, pady=4, sticky="w")
 
-        self.btn_open_log = tk.Button(top, text="Log", width=10, command=self.open_log_window)
-        self.btn_open_log.grid(row=0, column=8, padx=4, pady=4, sticky="w")
-
-        self.btn_toggle_capture = tk.Button(top, text="Capture RFID", width=14,
-                                             command=lambda: self._toggle_popup(self.capture_window))
-        self.btn_toggle_capture.grid(row=0, column=9, padx=(30, 4), pady=4, sticky="w")
-
-        # --- Bottom-right band: Results / Export live Google Sheet -------------------------
+        # --- Bottom band: Log / Capture RFID (left) — Results / Google Sheet (right) -------
         bottom_band = ttk.Frame(self)
         bottom_band.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=6)
         self.btn_gsheet = tk.Button(bottom_band, text="Export live Google Sheet", width=24,
@@ -402,6 +409,11 @@ class App(tk.Tk):
         self.btn_toggle_results = tk.Button(bottom_band, text="Results", width=14,
                                              command=lambda: self._toggle_popup(self.results_window))
         self.btn_toggle_results.pack(side=tk.RIGHT, padx=4)
+        self.btn_open_log = tk.Button(bottom_band, text="Log", width=10, command=self.open_log_window)
+        self.btn_open_log.pack(side=tk.LEFT, padx=4)
+        self.btn_toggle_capture = tk.Button(bottom_band, text="Capture RFID", width=14,
+                                             command=lambda: self._toggle_popup(self.capture_window))
+        self.btn_toggle_capture.pack(side=tk.LEFT, padx=4)
 
         # --- USB Connect (popup window content) --------------------------------------
 
@@ -1041,12 +1053,11 @@ class App(tk.Tk):
     def on_select_output_dir(self):
         directory = filedialog.askdirectory(
             title="Choose the output folder for race CSV exports",
-            initialdir=self.output_dir_path or DESKTOP_DIR,
+            initialdir=self.output_dir_path or DEFAULT_RESULTS_DIR,
         )
         if not directory:
             return
         self.output_dir_path = directory
-        self._set_button_color(self.btn_output_dir, True)
         self.write_log(MessageType.Info, f"Output folder set: {directory}")
 
     def _on_inventory_end_ui(self):
@@ -1597,7 +1608,7 @@ class App(tk.Tk):
     def on_select_teams_file(self):
         path = filedialog.askopenfilename(
             title="Select teams.csv (bib, rfid, team)",
-            initialdir=DESKTOP_DIR if os.path.isdir(DESKTOP_DIR) else os.getcwd(),
+            initialdir=DEFAULT_TEAMS_DIR if os.path.isdir(DEFAULT_TEAMS_DIR) else os.getcwd(),
             filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
         )
         if not path:
