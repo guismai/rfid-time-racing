@@ -42,6 +42,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from datetime import datetime
 
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
@@ -55,6 +56,19 @@ SCOPES = [
 
 SPREADSHEET_NAME = "RFID Time Racing"
 HEADER_ROW = ["Bib", "Team", "Start", "Finish", "Duration"]
+
+# Google Sheets' date-time serial epoch (days since 1899-12-30). Sending
+# timestamps as this raw number, instead of a text string, sidesteps any
+# locale-dependent auto-parsing on Google's side (the actual cause of
+# "#VALUE!" errors when the Start/Finish cells end up stored as plain
+# text instead of real date-time values).
+_SHEETS_EPOCH = datetime(1899, 12, 30)
+
+
+def _to_sheets_serial(timestamp: str) -> float:
+    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+    delta = dt - _SHEETS_EPOCH
+    return delta.days + delta.seconds / 86400
 
 GOOGLE_CLOUD_CREDENTIALS_URL = "https://console.cloud.google.com/apis/credentials"
 GOOGLE_CLOUD_APIS_LIBRARY_URL = "https://console.cloud.google.com/apis/library"
@@ -158,7 +172,10 @@ class GoogleSheetExporter:
         server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectCaptureHandler)
         server.oauth_params = {}
         port = server.server_address[1]
-        redirect_uri = f"http://127.0.0.1:{port}"
+        # Google's loopback OAuth flow (Desktop app clients) matches
+        # "http://localhost:<port>" specifically — use that exact host,
+        # even though the server itself binds to the loopback IP either way.
+        redirect_uri = f"http://localhost:{port}"
 
         auth_url = AUTH_ENDPOINT + "?" + urllib.parse.urlencode({
             "client_id": self._client_id,
@@ -273,9 +290,12 @@ class GoogleSheetExporter:
         existing_titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
 
         if tab_name not in existing_titles:
-            self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate",
-                       {"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
+            add_resp = self._api(
+                "POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate",
+                {"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
+            sheet_id = add_resp["replies"][0]["addSheet"]["properties"]["sheetId"]
             self._values_update(tab_name, "A1:E1", [HEADER_ROW])
+            self._format_datetime_columns(tab_name, sheet_id)
 
         if tab_name not in self._row_cache:
             self._row_cache[tab_name] = self._load_bib_rows(tab_name)
@@ -290,16 +310,31 @@ class GoogleSheetExporter:
         rng = urllib.parse.quote(f"'{tab_name}'!{a1_range}", safe="")
         return self._api("GET", f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}")
 
-    def _values_update(self, tab_name: str, a1_range: str, values: list):
+    def _values_update(self, tab_name: str, a1_range: str, values: list, raw: bool = False):
         rng = urllib.parse.quote(f"'{tab_name}'!{a1_range}", safe="")
-        url = f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}?valueInputOption=USER_ENTERED"
+        option = "RAW" if raw else "USER_ENTERED"
+        url = f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}?valueInputOption={option}"
         self._api("PUT", url, {"values": values})
 
-    def _values_append(self, tab_name: str, values: list) -> dict:
+    def _values_append(self, tab_name: str, values: list, raw: bool = False) -> dict:
         rng = urllib.parse.quote(f"'{tab_name}'!A:A", safe="")
+        option = "RAW" if raw else "USER_ENTERED"
         url = (f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}:append"
-               f"?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS")
+               f"?valueInputOption={option}&insertDataOption=INSERT_ROWS")
         return self._api("POST", url, {"values": values})
+
+    def _format_datetime_columns(self, tab_name: str, sheet_id: int):
+        """Formats columns C:D (Start/Finish) as date-time, once per tab, so
+        the raw serial numbers we write display as readable timestamps."""
+        self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate", {"requests": [{
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startColumnIndex": 2, "endColumnIndex": 4},
+                "cell": {"userEnteredFormat": {"numberFormat": {
+                    "type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss",
+                }}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        }]})
 
     # ------------------------------------------------------------------------------------
     def push_passage(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
@@ -310,14 +345,16 @@ class GoogleSheetExporter:
         tab_name = self.ensure_round_tab(round_num)
         cache = self._row_cache[tab_name]
         column = "C" if mode == "start_line" else "D"
+        serial = _to_sheets_serial(timestamp)
 
         if bib in cache:
             row = cache[bib]
-            self._values_update(tab_name, f"{column}{row}", [[timestamp]])
+            self._values_update(tab_name, f"{column}{row}", [[serial]], raw=True)
         else:
-            start_val = timestamp if mode == "start_line" else ""
-            finish_val = timestamp if mode == "finish_line" else ""
-            append_resp = self._values_append(tab_name, [[bib, team, start_val, finish_val, ""]])
+            start_val = serial if mode == "start_line" else ""
+            finish_val = serial if mode == "finish_line" else ""
+            append_resp = self._values_append(
+                tab_name, [[bib, team, start_val, finish_val, ""]], raw=True)
             updated_range = append_resp["updates"]["updatedRange"]  # e.g. "'Round 1'!A5:E5"
             row = int("".join(ch for ch in updated_range.split("!")[1].split(":")[0] if ch.isdigit()))
             cache[bib] = row
@@ -325,3 +362,4 @@ class GoogleSheetExporter:
                 tab_name, f"E{row}",
                 [[f'=IF(AND(C{row}<>"",D{row}<>""),TEXT(D{row}-C{row},"HH:MM:SS"),"")']],
             )
+
