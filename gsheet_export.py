@@ -1,12 +1,17 @@
 """
 Live export of race passages to a Google Sheet.
 
+Uses only Python's standard library (urllib, http.server, hashlib) to talk
+directly to Google's OAuth2 and REST APIs (Sheets v4, Drive v3) — no
+google-auth / google-api-python-client / cryptography needed, so there is
+nothing to compile on any platform, including 32-bit Windows.
+
 Each running instance of the app only ever writes to its own column
 (Start or Finish) for a given bib, in a tab named "Round <N>" inside a
 single spreadsheet named "RFID Time Racing" at the root of the user's
 Google Drive. A start-line station and a finish-line station (which may
-be two separate computers/instances) end up merging their data live,
-in the same spreadsheet, simply by both targeting the same round tab.
+be two separate computers/instances) end up merging their data live, in
+the same spreadsheet, simply by both targeting the same round tab.
 
 Setup required (one-time, per Google account):
   1. In Google Cloud Console, create/select a project and enable the
@@ -17,17 +22,31 @@ Setup required (one-time, per Google account):
   3. The first time "Export live Google Sheet" is clicked in the app, a
      "Google Sheet Setup" window asks for that Client ID / Client Secret
      (with a button that opens the right Cloud Console page) and writes
-     `credentials.json` for you — no manual JSON download/rename needed.
+     `credentials.json` for you.
   4. Right after that, a browser window opens asking you to sign in and
-     grant access; the resulting token is cached in `token.json` so this
-     only happens once per machine (until the token is revoked or the
-     file is deleted).
+     grant access (PKCE authorization-code flow); the resulting token is
+     cached in `token.json` so this only happens once per machine (until
+     the token is revoked or the file is deleted).
 
-Dependencies (not needed unless this feature is used):
-    pip install google-auth-oauthlib google-api-python-client google-auth-httplib2
+No pip install needed for this feature.
 """
+import base64
+import hashlib
+import http.server
 import json
 import os
+import secrets
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+
+AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
+DRIVE_API = "https://www.googleapis.com/drive/v3/files"
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -37,27 +56,13 @@ SCOPES = [
 SPREADSHEET_NAME = "RFID Time Racing"
 HEADER_ROW = ["Bib", "Team", "Start", "Finish", "Duration"]
 
-# Where the "Create Desktop app OAuth client" page lives, so the setup
-# window can send the user straight there instead of them having to
-# navigate the Cloud Console themselves.
 GOOGLE_CLOUD_CREDENTIALS_URL = "https://console.cloud.google.com/apis/credentials"
 GOOGLE_CLOUD_APIS_LIBRARY_URL = "https://console.cloud.google.com/apis/library"
 
 
 def write_credentials_file(path: str, client_id: str, client_secret: str):
-    """Writes a credentials.json in the exact shape google-auth-oauthlib's
-    InstalledAppFlow.from_client_secrets_file() expects for a Desktop app
-    OAuth client, from just the Client ID / Client Secret (no manual JSON
-    download/rename needed)."""
-    content = {
-        "installed": {
-            "client_id": client_id.strip(),
-            "client_secret": client_secret.strip(),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost"],
-        }
-    }
+    """Writes a small credentials.json with just what this module needs."""
+    content = {"client_id": client_id.strip(), "client_secret": client_secret.strip()}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(content, f, indent=2)
 
@@ -70,68 +75,178 @@ class GoogleSheetError(Exception):
     pass
 
 
+class _RedirectCaptureHandler(http.server.BaseHTTPRequestHandler):
+    """Catches the single OAuth redirect (?code=...) and shows a simple page."""
+
+    def do_GET(self):
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        self.server.oauth_params = params  # type: ignore[attr-defined]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        if "code" in params:
+            body = "<html><body><h2>Signed in. You can close this window.</h2></body></html>"
+        else:
+            body = "<html><body><h2>Sign-in failed or was cancelled.</h2></body></html>"
+        self.wfile.write(body.encode("utf-8"))
+
+    def log_message(self, fmt, *args):
+        pass  # keep the console quiet
+
+
 class GoogleSheetExporter:
     """
-    Handles Google auth + finding/creating the spreadsheet and round tabs,
-    and pushing individual passage rows in real time.
+    Handles the OAuth2 (PKCE) sign-in, finding/creating the spreadsheet and
+    round tabs, and pushing individual passage rows in real time.
 
-    All methods that talk to Google are synchronous/blocking (including
-    the OAuth browser flow) — callers should run `connect()` off the UI
-    thread and marshal the result back via the usual ui_queue mechanism.
+    All methods that talk to Google are synchronous/blocking (including the
+    OAuth browser flow) — callers should run `connect()` off the UI thread.
     """
 
     def __init__(self, base_dir: str):
-        self._base_dir = base_dir
-        self._credentials_path = os.path.join(base_dir, "credentials.json")
+        self._credentials_path = credentials_path_for(base_dir)
         self._token_path = os.path.join(base_dir, "token.json")
-        self._service = None
-        self._drive_service = None
+        self._client_id = None
+        self._client_secret = None
+        self._access_token = None
+        self._refresh_token = None
+        self._expires_at = 0.0
         self.spreadsheet_id: str | None = None
         # per-tab cache: {round_tab_name: {bib: row_number}}
         self._row_cache: dict[str, dict[str, int]] = {}
 
     # ------------------------------------------------------------------------------------
+    # OAuth
+    # ------------------------------------------------------------------------------------
     def connect(self):
-        """Authenticates (opening a browser window if needed) and makes sure the
+        """Loads credentials.json, reuses/refreshes a cached token if possible,
+        otherwise runs the browser sign-in flow. Then makes sure the
         'RFID Time Racing' spreadsheet exists. Raises GoogleSheetError on failure."""
         if not os.path.isfile(self._credentials_path):
             raise GoogleSheetError(
                 f"credentials.json not found at {self._credentials_path}. "
-                "See gsheet_export.py's module docstring for the one-time Google "
-                "Cloud setup steps."
+                "Use the Google Sheet Setup window to create it."
             )
+        with open(self._credentials_path, "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        self._client_id = creds["client_id"]
+        self._client_secret = creds["client_secret"]
 
-        try:
-            from google.auth.transport.requests import Request
-            from google.oauth2.credentials import Credentials
-            from google_auth_oauthlib.flow import InstalledAppFlow
-            from googleapiclient.discovery import build
-        except ImportError as ex:
-            raise GoogleSheetError(
-                "Missing dependency: pip install google-auth-oauthlib "
-                "google-api-python-client google-auth-httplib2"
-            ) from ex
-
-        creds = None
         if os.path.isfile(self._token_path):
             try:
-                creds = Credentials.from_authorized_user_file(self._token_path, SCOPES)
+                with open(self._token_path, "r", encoding="utf-8") as f:
+                    tok = json.load(f)
+                self._access_token = tok["access_token"]
+                self._refresh_token = tok["refresh_token"]
+                self._expires_at = tok.get("expires_at", 0)
+                self._ensure_fresh_token()
             except Exception:
-                creds = None
+                self._access_token = None  # fall through to a fresh sign-in
 
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(self._credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)  # opens the Google sign-in window
-            with open(self._token_path, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
-
-        self._service = build("sheets", "v4", credentials=creds)
-        self._drive_service = build("drive", "v3", credentials=creds)
+        if not self._access_token:
+            self._run_browser_sign_in()
 
         self._ensure_spreadsheet()
+
+    def _run_browser_sign_in(self):
+        code_verifier = secrets.token_urlsafe(64)[:128]
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).decode("ascii").rstrip("=")
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectCaptureHandler)
+        server.oauth_params = {}
+        port = server.server_address[1]
+        redirect_uri = f"http://127.0.0.1:{port}"
+
+        auth_url = AUTH_ENDPOINT + "?" + urllib.parse.urlencode({
+            "client_id": self._client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(SCOPES),
+            "access_type": "offline",
+            "prompt": "consent",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        })
+
+        webbrowser.open(auth_url)
+        server.timeout = 180
+        server.handle_request()  # blocks until the single redirect arrives (or times out)
+        params = getattr(server, "oauth_params", {})
+        server.server_close()
+
+        if "code" not in params:
+            raise GoogleSheetError("Google sign-in was cancelled or timed out.")
+        code = params["code"][0]
+
+        token_resp = self._post_form(TOKEN_ENDPOINT, {
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "code": code,
+            "code_verifier": code_verifier,
+            "grant_type": "authorization_code",
+            "redirect_uri": redirect_uri,
+        })
+        self._store_token(token_resp)
+
+    def _ensure_fresh_token(self):
+        if self._access_token and time.time() < self._expires_at - 60:
+            return  # still valid for at least another minute
+        token_resp = self._post_form(TOKEN_ENDPOINT, {
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "refresh_token": self._refresh_token,
+            "grant_type": "refresh_token",
+        })
+        # a refresh response usually omits refresh_token (it stays the same)
+        token_resp.setdefault("refresh_token", self._refresh_token)
+        self._store_token(token_resp)
+
+    def _store_token(self, token_resp: dict):
+        self._access_token = token_resp["access_token"]
+        self._refresh_token = token_resp.get("refresh_token", self._refresh_token)
+        self._expires_at = time.time() + float(token_resp.get("expires_in", 3600))
+        with open(self._token_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "access_token": self._access_token,
+                "refresh_token": self._refresh_token,
+                "expires_at": self._expires_at,
+            }, f, indent=2)
+
+    # ------------------------------------------------------------------------------------
+    # Low-level HTTP helpers (stdlib only)
+    # ------------------------------------------------------------------------------------
+    @staticmethod
+    def _post_form(url: str, fields: dict) -> dict:
+        data = urllib.parse.urlencode(fields).encode("ascii")
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as ex:
+            raise GoogleSheetError(f"Google token request failed: {ex.read().decode('utf-8', 'ignore')}") from ex
+
+    def _api(self, method: str, url: str, body: dict = None, retry: bool = True) -> dict:
+        self._ensure_fresh_token()
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Authorization", f"Bearer {self._access_token}")
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as ex:
+            if ex.code == 401 and retry:
+                self._expires_at = 0  # force a refresh and retry once
+                return self._api(method, url, body, retry=False)
+            raise GoogleSheetError(
+                f"Google API request failed ({ex.code}): {ex.read().decode('utf-8', 'ignore')}"
+            ) from ex
 
     # ------------------------------------------------------------------------------------
     def _ensure_spreadsheet(self):
@@ -140,47 +255,51 @@ class GoogleSheetExporter:
             "mimeType = 'application/vnd.google-apps.spreadsheet' and "
             "'root' in parents and trashed = false"
         )
-        resp = self._drive_service.files().list(q=query, spaces="drive",
-                                                  fields="files(id, name)").execute()
+        url = DRIVE_API + "?" + urllib.parse.urlencode({"q": query, "fields": "files(id,name)"})
+        resp = self._api("GET", url)
         files = resp.get("files", [])
         if files:
             self.spreadsheet_id = files[0]["id"]
             return
 
-        body = {"properties": {"title": SPREADSHEET_NAME}}
-        sheet = self._service.spreadsheets().create(body=body, fields="spreadsheetId").execute()
-        self.spreadsheet_id = sheet["spreadsheetId"]
-        # newly created spreadsheets land in "My Drive" root by default already.
+        resp = self._api("POST", SHEETS_API, {"properties": {"title": SPREADSHEET_NAME}})
+        self.spreadsheet_id = resp["spreadsheetId"]
 
     # ------------------------------------------------------------------------------------
     def ensure_round_tab(self, round_num: int) -> str:
         """Makes sure a 'Round <N>' tab exists (with the header row), returns its name."""
         tab_name = f"Round {round_num}"
-        meta = self._service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+        meta = self._api("GET", f"{SHEETS_API}/{self.spreadsheet_id}")
         existing_titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
 
         if tab_name not in existing_titles:
-            self._service.spreadsheets().batchUpdate(
-                spreadsheetId=self.spreadsheet_id,
-                body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
-            ).execute()
-            self._service.spreadsheets().values().update(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{tab_name}'!A1:E1",
-                valueInputOption="USER_ENTERED",
-                body={"values": [HEADER_ROW]},
-            ).execute()
+            self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate",
+                       {"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
+            self._values_update(tab_name, "A1:E1", [HEADER_ROW])
 
         if tab_name not in self._row_cache:
             self._row_cache[tab_name] = self._load_bib_rows(tab_name)
         return tab_name
 
     def _load_bib_rows(self, tab_name: str) -> dict:
-        resp = self._service.spreadsheets().values().get(
-            spreadsheetId=self.spreadsheet_id, range=f"'{tab_name}'!A2:A"
-        ).execute()
+        resp = self._values_get(tab_name, "A2:A")
         rows = resp.get("values", [])
         return {row[0]: idx + 2 for idx, row in enumerate(rows) if row}
+
+    def _values_get(self, tab_name: str, a1_range: str) -> dict:
+        rng = urllib.parse.quote(f"'{tab_name}'!{a1_range}", safe="")
+        return self._api("GET", f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}")
+
+    def _values_update(self, tab_name: str, a1_range: str, values: list):
+        rng = urllib.parse.quote(f"'{tab_name}'!{a1_range}", safe="")
+        url = f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}?valueInputOption=USER_ENTERED"
+        self._api("PUT", url, {"values": values})
+
+    def _values_append(self, tab_name: str, values: list) -> dict:
+        rng = urllib.parse.quote(f"'{tab_name}'!A:A", safe="")
+        url = (f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}:append"
+               f"?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS")
+        return self._api("POST", url, {"values": values})
 
     # ------------------------------------------------------------------------------------
     def push_passage(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
@@ -194,29 +313,15 @@ class GoogleSheetExporter:
 
         if bib in cache:
             row = cache[bib]
-            self._service.spreadsheets().values().update(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{tab_name}'!{column}{row}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[timestamp]]},
-            ).execute()
+            self._values_update(tab_name, f"{column}{row}", [[timestamp]])
         else:
             start_val = timestamp if mode == "start_line" else ""
             finish_val = timestamp if mode == "finish_line" else ""
-            append_resp = self._service.spreadsheets().values().append(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{tab_name}'!A:A",
-                valueInputOption="USER_ENTERED",
-                insertDataOption="INSERT_ROWS",
-                body={"values": [[bib, team, start_val, finish_val, ""]]},
-            ).execute()
+            append_resp = self._values_append(tab_name, [[bib, team, start_val, finish_val, ""]])
             updated_range = append_resp["updates"]["updatedRange"]  # e.g. "'Round 1'!A5:E5"
             row = int("".join(ch for ch in updated_range.split("!")[1].split(":")[0] if ch.isdigit()))
             cache[bib] = row
-            # Duration formula, written once when the row is created.
-            self._service.spreadsheets().values().update(
-                spreadsheetId=self.spreadsheet_id,
-                range=f"'{tab_name}'!E{row}",
-                valueInputOption="USER_ENTERED",
-                body={"values": [[f'=IF(AND(C{row}<>"",D{row}<>""),TEXT(D{row}-C{row},"HH:MM:SS"),"")']]},
-            ).execute()
+            self._values_update(
+                tab_name, f"E{row}",
+                [[f'=IF(AND(C{row}<>"",D{row}<>""),TEXT(D{row}-C{row},"HH:MM:SS"),"")']],
+            )

@@ -63,25 +63,26 @@ number against a teams list, and export the results.
 
 The **Export live Google Sheet** button needs a one-time setup per Google
 account, since it can't create its own Google Cloud project on your
-behalf:
+behalf. No extra `pip install` is needed for this feature — it talks to
+Google's OAuth2 and REST APIs using only Python's standard library, so
+there's nothing to compile on any platform (including 32-bit Windows,
+where packages like `cryptography` often have no prebuilt wheel and
+would otherwise require a full MSVC/Rust toolchain just to install).
 
-1. Install the extra dependencies:
-   ```bash
-   pip install google-auth-oauthlib google-api-python-client google-auth-httplib2
-   ```
-2. In the [Google Cloud Console](https://console.cloud.google.com/), create
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create
    (or pick) a project, then enable the **Google Sheets API** and the
    **Google Drive API** for it.
-3. Under *APIs & Services → Credentials*, create an **OAuth client ID** of
+2. Under *APIs & Services → Credentials*, create an **OAuth client ID** of
    type **Desktop app**. Keep its **Client ID** and **Client Secret** handy
    — you don't need to download or rename any JSON file yourself.
-4. Click **Export live Google Sheet** in the app: since no `credentials.json`
+3. Click **Export live Google Sheet** in the app: since no `credentials.json`
    exists yet, a **"Google Sheet Setup"** window opens with buttons that
    jump straight to the right Cloud Console pages, and two fields for the
    Client ID / Client Secret. Click **Save & Connect** — the app writes
    `credentials.json` for you, then a browser window opens asking you to
-   sign in and grant access. The resulting token is cached in `token.json`
-   next to it, so this only happens once per machine.
+   sign in and grant access (PKCE authorization-code flow). The resulting
+   token is cached in `token.json` next to it, so this only happens once
+   per machine.
 
 Once connected, a spreadsheet named **"RFID Time Racing"** is created (if
 it doesn't already exist) at the root of your Drive, with one tab per
@@ -125,9 +126,9 @@ Tkinter dialog) before you even try to open the reader.
   `sudo apt install python3-tk`)
 - `pyserial` **optional** — only used to auto-list COM ports if a serial
   fallback is ever added; not required for normal USB/HID use.
-- `google-auth-oauthlib`, `google-api-python-client`, `google-auth-httplib2`
-  **optional** — only needed for the **Export live Google Sheet** button
-  (see [Google Sheet export setup](#google-sheet-export-setup)).
+
+No other dependencies: the Google Sheet export feature (`gsheet_export.py`)
+uses only the standard library.
 
 ## Running
 
