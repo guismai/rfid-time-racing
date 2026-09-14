@@ -86,18 +86,13 @@ def credentials_path_for(base_dir: str) -> str:
 
 
 def _duration_formula(row: int) -> str:
-    """Duration formula for a given row: a real numeric elapsed-time value
-    (Finish - Start), not text — the E column is formatted as a duration
-    ([h]:mm:ss) so Sheets displays it correctly on its own. Defensive
-    against legacy rows where Start/Finish were stored as plain text
-    instead of a real date-time value: ISNUMBER() picks the raw serial
-    when present, otherwise DATEVALUE()+TIMEVALUE() explicitly parses the
-    text."""
-    def _num_or_parsed(cell):
-        return f'IF(ISNUMBER({cell}),{cell},DATEVALUE({cell})+TIMEVALUE({cell}))'
+    """Duration formula for a given row: a plain D - C subtraction. Both
+    cells are always written as real Sheets date-time serial numbers (see
+    _to_sheets_serial / _format_datetime_columns), so a simple subtraction
+    is enough; the E column is formatted as a duration ([h]:mm:ss) so
+    Sheets displays the result as elapsed time on its own."""
     c, d = f"C{row}", f"D{row}"
-    return (f'=IF(AND({c}<>"",{d}<>""),'
-            f'{_num_or_parsed(d)}-{_num_or_parsed(c)},"")')
+    return f'=IF(AND({c}<>"",{d}<>""),{d}-{c},"")'
 
 
 class GoogleSheetError(Exception):
