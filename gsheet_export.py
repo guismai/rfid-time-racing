@@ -141,6 +141,7 @@ class GoogleSheetExporter:
         # per-tab cache: {round_tab_name: {bib: row_number}}
         self._row_cache: dict[str, dict[str, int]] = {}
         self._formatted_tabs: set[str] = set()
+        self._sheet_ids: dict[str, int] = {}
 
     # ------------------------------------------------------------------------------------
     # OAuth
@@ -323,6 +324,7 @@ class GoogleSheetExporter:
             self._format_datetime_columns(tab_name, sheet_id)
             self._formatted_tabs.add(tab_name)
 
+        self._sheet_ids[tab_name] = sheet_id
         if tab_name not in self._row_cache:
             self._row_cache[tab_name] = self._load_bib_rows(tab_name)
         return tab_name
@@ -348,6 +350,29 @@ class GoogleSheetExporter:
         url = (f"{SHEETS_API}/{self.spreadsheet_id}/values/{rng}:append"
                f"?valueInputOption={option}&insertDataOption=INSERT_ROWS")
         return self._api("POST", url, {"values": values})
+
+    def _write_date_cell(self, sheet_id: int, row: int, column_index: int, serial: float):
+        """Sets a cell's value AND its date-time number format in a single
+        atomic batchUpdate call. Needed specifically when writing into a
+        cell that already exists but was previously blank (e.g. filling in
+        Finish on a row created earlier for Start-only): a plain
+        values.update on such a cell does NOT reliably keep a number format
+        that was applied to it while it was still empty — Sheets falls back
+        to auto-detecting a format from the new value (which is locale-
+        dependent), which is exactly the "dd/mm/yyyy vs yyyy-mm-dd" mismatch
+        this works around."""
+        self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate", {"requests": [{
+            "updateCells": {
+                "start": {"sheetId": sheet_id, "rowIndex": row - 1, "columnIndex": column_index},
+                "rows": [{"values": [{
+                    "userEnteredValue": {"numberValue": serial},
+                    "userEnteredFormat": {"numberFormat": {
+                        "type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss",
+                    }},
+                }]}],
+                "fields": "userEnteredValue,userEnteredFormat.numberFormat",
+            }
+        }]})
 
     def _format_datetime_columns(self, tab_name: str, sheet_id: int):
         """Formats columns C:D (Start/Finish) as date-time and column E
@@ -391,7 +416,8 @@ class GoogleSheetExporter:
 
         if bib in cache:
             row = cache[bib]
-            self._values_update(tab_name, f"{column}{row}", [[serial]], raw=True)
+            col_index = 2 if mode == "start_line" else 3  # C=2, D=3 (0-based)
+            self._write_date_cell(self._sheet_ids[tab_name], row, col_index, serial)
             print(f"[DEBUG] gsheet: updated existing row {row}, cell {column}{row}", file=sys.stderr)
         else:
             start_val = serial if mode == "start_line" else ""
