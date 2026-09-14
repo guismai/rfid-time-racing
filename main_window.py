@@ -52,6 +52,9 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 else:
     _APP_DIR = _PERSIST_DIR = os.path.dirname(os.path.abspath(__file__))
 
+DESKTOP_DIR = os.path.join(os.path.expanduser("~"), "Desktop")
+DEFAULT_TEAMS_FILE = os.path.join(DESKTOP_DIR, "teams.csv")
+
 
 class MessageType:
     Info = 0
@@ -88,7 +91,8 @@ class App(tk.Tk):
         self.race_csv_file = None
         self.race_csv_writer = None
         self.race_csv_path: str | None = None
-        self._last_export_dir: str | None = None
+        self.teams_file_path: str | None = None
+        self.output_dir_path: str | None = DESKTOP_DIR if os.path.isdir(DESKTOP_DIR) else None
 
         # Live Google Sheet export (see gsheet_export.py)
         self.gsheet_exporter: GoogleSheetExporter | None = None
@@ -110,6 +114,8 @@ class App(tk.Tk):
         self.cmb_region.set("Europe")  # default region
         self.on_region_changed()
 
+        self._set_button_color(self.btn_output_dir, self.output_dir_path is not None)
+        self._auto_load_teams_file()
         self.after(200, self._auto_connect_usb)
 
     # ------------------------------------------------------------------------------------
@@ -163,6 +169,27 @@ class App(tk.Tk):
         if inventory is actually running, or the default color otherwise."""
         button.bind("<Enter>", lambda e: button.configure(bg="#4caf50", fg="white"))
         button.bind("<Leave>", lambda e: self._set_start_button_color(self.in_inventory))
+
+    def _add_tooltip(self, widget, text_fn):
+        """Shows a small tooltip near the cursor on hover, with text computed
+        fresh each time (so it reflects the current file/folder path)."""
+        state = {"win": None}
+
+        def show(event):
+            win = tk.Toplevel(widget)
+            win.wm_overrideredirect(True)
+            win.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            tk.Label(win, text=text_fn(), background="#ffffe0", relief="solid",
+                     borderwidth=1, padx=4, pady=2).pack()
+            state["win"] = win
+
+        def hide(_event):
+            if state["win"] is not None:
+                state["win"].destroy()
+                state["win"] = None
+
+        widget.bind("<Enter>", show)
+        widget.bind("<Leave>", hide)
 
     # ------------------------------------------------------------------------------------
     # Live Google Sheet export
@@ -328,40 +355,53 @@ class App(tk.Tk):
                                       textvariable=self.round_var, state="readonly")
         self.spn_round.pack(side=tk.LEFT)
 
+        # --- teams.csv / output folder (prerequisites for Start) ---------------------------
+        self.btn_teams_file = tk.Button(top, text="Select teams.csv", width=16,
+                                         command=self.on_select_teams_file)
+        self.btn_teams_file.grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        self._add_tooltip(self.btn_teams_file, lambda: self.teams_file_path or "No file selected")
+
+        self.btn_output_dir = tk.Button(top, text="Select output folder", width=18,
+                                         command=self.on_select_output_dir)
+        self.btn_output_dir.grid(row=0, column=3, padx=4, pady=4, sticky="w")
+        self._add_tooltip(self.btn_output_dir, lambda: self.output_dir_path or "No folder selected")
+
         self.btn_inventory = tk.Button(top, text="Start", width=10,
                                         command=self.on_inventory_click)
-        self.btn_inventory.grid(row=0, column=2, padx=4, pady=4, sticky="w")
+        self.btn_inventory.grid(row=0, column=4, padx=4, pady=4, sticky="w")
         self._bind_start_hover(self.btn_inventory)
 
         self.btn_inv_stop = tk.Button(top, text="Stop", width=10,
                                        command=self.on_inv_stop_click)
-        self.btn_inv_stop.grid(row=0, column=3, padx=4, pady=4, sticky="w")
+        self.btn_inv_stop.grid(row=0, column=5, padx=4, pady=4, sticky="w")
         self.btn_inv_stop.bind("<Enter>", lambda e: self.btn_inv_stop.configure(bg="#e53935", fg="white"))
         self.btn_inv_stop.bind("<Leave>", lambda e: self.btn_inv_stop.configure(
             bg=self._default_btn_bg, fg=self._default_btn_fg))
 
         self.btn_toggle_dev = tk.Button(top, text="Device Parameters", width=18,
                                          command=lambda: self._toggle_popup(self.dev_window))
-        self.btn_toggle_dev.grid(row=0, column=4, padx=4, pady=4, sticky="w")
+        self.btn_toggle_dev.grid(row=0, column=6, padx=4, pady=4, sticky="w")
 
         self.btn_toggle_freq = tk.Button(top, text="Frequency", width=14,
                                           command=lambda: self._toggle_popup(self.freq_window))
-        self.btn_toggle_freq.grid(row=0, column=5, padx=4, pady=4, sticky="w")
+        self.btn_toggle_freq.grid(row=0, column=7, padx=4, pady=4, sticky="w")
 
         self.btn_open_log = tk.Button(top, text="Log", width=10, command=self.open_log_window)
-        self.btn_open_log.grid(row=0, column=6, padx=4, pady=4, sticky="w")
+        self.btn_open_log.grid(row=0, column=8, padx=4, pady=4, sticky="w")
 
         self.btn_toggle_capture = tk.Button(top, text="Capture RFID", width=14,
                                              command=lambda: self._toggle_popup(self.capture_window))
-        self.btn_toggle_capture.grid(row=0, column=7, padx=4, pady=4, sticky="w")
+        self.btn_toggle_capture.grid(row=0, column=9, padx=(30, 4), pady=4, sticky="w")
 
-        self.btn_toggle_results = tk.Button(top, text="Results", width=14,
-                                             command=lambda: self._toggle_popup(self.results_window))
-        self.btn_toggle_results.grid(row=0, column=8, padx=(30, 4), pady=4, sticky="w")
-
-        self.btn_gsheet = tk.Button(top, text="Export live Google Sheet", width=24,
+        # --- Bottom-right band: Results / Export live Google Sheet -------------------------
+        bottom_band = ttk.Frame(self)
+        bottom_band.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=6)
+        self.btn_gsheet = tk.Button(bottom_band, text="Export live Google Sheet", width=24,
                                      command=self.on_gsheet_button_click)
-        self.btn_gsheet.grid(row=0, column=9, padx=4, pady=4, sticky="w")
+        self.btn_gsheet.pack(side=tk.RIGHT, padx=4)
+        self.btn_toggle_results = tk.Button(bottom_band, text="Results", width=14,
+                                             command=lambda: self._toggle_popup(self.results_window))
+        self.btn_toggle_results.pack(side=tk.RIGHT, padx=4)
 
         # --- USB Connect (popup window content) --------------------------------------
 
@@ -968,21 +1008,17 @@ class App(tk.Tk):
         return max(1, min(10, n))
 
     def _start_race_csv(self):
-        """Opens the real-time CSV export file for the race that is starting.
-        Raises an exception if the user cancels or if opening the file fails."""
+        """Opens the real-time CSV export file for the race that is starting,
+        in the pre-selected output folder (see on_select_output_dir).
+        Raises an exception if no output folder is set or opening the file fails."""
+        if not self.output_dir_path:
+            raise RuntimeError("Select an output folder before starting")
         mode = self.race_mode_var.get()
         round_num = self._get_round_number()
-        directory = filedialog.askdirectory(
-            title="Choose the CSV export folder for this race",
-            initialdir=self._last_export_dir or os.getcwd(),
-        )
-        if not directory:
-            raise RuntimeError("CSV export cancelled: no folder chosen")
-        self._last_export_dir = directory
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         filename = f"{mode}_round_{round_num}_{timestamp}.csv"
-        path = os.path.join(directory, filename)
+        path = os.path.join(self.output_dir_path, filename)
 
         self.race_csv_file = open(path, "w", newline="", encoding="utf-8")
         self.race_csv_writer = csv.writer(self.race_csv_file, delimiter=";")
@@ -1001,6 +1037,17 @@ class App(tk.Tk):
         self.race_csv_file = None
         self.race_csv_writer = None
         self.race_csv_path = None
+
+    def on_select_output_dir(self):
+        directory = filedialog.askdirectory(
+            title="Choose the output folder for race CSV exports",
+            initialdir=self.output_dir_path or DESKTOP_DIR,
+        )
+        if not directory:
+            return
+        self.output_dir_path = directory
+        self._set_button_color(self.btn_output_dir, True)
+        self.write_log(MessageType.Info, f"Output folder set: {directory}")
 
     def _on_inventory_end_ui(self):
         self.in_inventory = False
@@ -1231,8 +1278,13 @@ class App(tk.Tk):
                     messagebox.showinfo(self.title(),
                                          "Select 'Start line' or 'Finish line' before starting")
                     return
-                self._prompt_teams_file()  # may raise (cancelled, invalid file)
-                self._start_race_csv()  # may raise (cancelled, write error)
+                if not self.teams_file_path or self.allowed_codes is None:
+                    messagebox.showinfo(self.title(), "Select teams.csv before starting")
+                    return
+                if not self.output_dir_path:
+                    messagebox.showinfo(self.title(), "Select an output folder before starting")
+                    return
+                self._start_race_csv()  # may raise (write error)
                 self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
                 self.on_clear_allowed_log()
@@ -1267,7 +1319,12 @@ class App(tk.Tk):
                     messagebox.showinfo(self.title(),
                                          "Select 'Start line' or 'Finish line' before starting")
                     return
-                self._prompt_teams_file()  # may raise (cancelled, invalid file)
+                if not self.teams_file_path or self.allowed_codes is None:
+                    messagebox.showinfo(self.title(), "Select teams.csv before starting")
+                    return
+                if not self.output_dir_path:
+                    messagebox.showinfo(self.title(), "Select an output folder before starting")
+                    return
                 self._start_race_csv()
                 self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
@@ -1527,21 +1584,41 @@ class App(tk.Tk):
             teams[code] = {"bib": dossard, "team": equipe}
         return teams
 
-    def _prompt_teams_file(self):
-        """Asks the user to pick a teams.csv file and loads it as the authorization
-        filter for the race about to start. Raises if cancelled or invalid."""
-        path = filedialog.askopenfilename(
-            title="Select teams.csv (bib, rfid, team) for this race",
-            filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
-        )
-        if not path:
-            raise RuntimeError("Start cancelled: no teams.csv file selected")
+    def _load_teams_file(self, path: str):
+        """Loads a teams.csv file as the authorization filter. Raises on invalid file."""
         teams = self._parse_teams_file(path)
         if not teams:
             raise RuntimeError("No valid tag found in the selected teams.csv file")
         self.allowed_codes = teams
+        self.teams_file_path = path
         self.write_log(MessageType.Info, f"Teams loaded: {len(teams)} tag(s) from {path}")
         self._show_tag()
+
+    def on_select_teams_file(self):
+        path = filedialog.askopenfilename(
+            title="Select teams.csv (bib, rfid, team)",
+            initialdir=DESKTOP_DIR if os.path.isdir(DESKTOP_DIR) else os.getcwd(),
+            filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            self._load_teams_file(path)
+            self._set_button_color(self.btn_teams_file, True)
+        except Exception as ex:
+            self._set_button_color(self.btn_teams_file, False)
+            messagebox.showinfo(self.title(), f"Failed to load teams.csv: {ex}")
+
+    def _auto_load_teams_file(self):
+        """Loads teams.csv from the Desktop at startup, if present, so it's
+        ready without any manual action."""
+        if not os.path.isfile(DEFAULT_TEAMS_FILE):
+            return
+        try:
+            self._load_teams_file(DEFAULT_TEAMS_FILE)
+            self._set_button_color(self.btn_teams_file, True)
+        except Exception as ex:
+            self.write_log(MessageType.Warning, f"Could not auto-load {DEFAULT_TEAMS_FILE}", ex)
 
     # ------------------------------------------------------------------------------------
     def _on_close(self):
