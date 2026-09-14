@@ -73,11 +73,15 @@ behalf:
    (or pick) a project, then enable the **Google Sheets API** and the
    **Google Drive API** for it.
 3. Under *APIs & Services → Credentials*, create an **OAuth client ID** of
-   type **Desktop app**, download its JSON, and save it as
-   `credentials.json` next to `main.py` (or next to the built `.exe`).
-4. Click **Export live Google Sheet**: a browser window opens asking you to
+   type **Desktop app**. Keep its **Client ID** and **Client Secret** handy
+   — you don't need to download or rename any JSON file yourself.
+4. Click **Export live Google Sheet** in the app: since no `credentials.json`
+   exists yet, a **"Google Sheet Setup"** window opens with buttons that
+   jump straight to the right Cloud Console pages, and two fields for the
+   Client ID / Client Secret. Click **Save & Connect** — the app writes
+   `credentials.json` for you, then a browser window opens asking you to
    sign in and grant access. The resulting token is cached in `token.json`
-   next to `credentials.json`, so this only happens once per machine.
+   next to it, so this only happens once per machine.
 
 Once connected, a spreadsheet named **"RFID Time Racing"** is created (if
 it doesn't already exist) at the root of your Drive, with one tab per
@@ -88,7 +92,10 @@ itself once both are present — so two independent stations (even on
 different computers) merge correctly without stepping on each other.
 
 `credentials.json` and `token.json` are personal secrets — they're already
-excluded via `.gitignore` and must never be committed or shared.
+excluded via `.gitignore` and must never be committed or shared. When
+running as the built `.exe`, both files live next to the `.exe` itself
+(never inside PyInstaller's temporary extraction folder, which is wiped on
+every launch).
 
 ## The reader DLL
 

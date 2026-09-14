@@ -11,17 +11,22 @@ in the same spreadsheet, simply by both targeting the same round tab.
 Setup required (one-time, per Google account):
   1. In Google Cloud Console, create/select a project and enable the
      "Google Sheets API" and "Google Drive API".
-  2. Create an OAuth 2.0 Client ID of type "Desktop app", download its
-     JSON, and save it as `credentials.json` next to this file (or next
-     to the packaged .exe).
-  3. The first time "Export live Google Sheet" is clicked, a browser
-     window opens asking you to sign in and grant access; the resulting
-     token is cached in `token.json` so this only happens once per
-     machine (until the token is revoked or deleted).
+  2. Create an OAuth 2.0 Client ID of type "Desktop app" (Cloud Console ->
+     APIs & Services -> Credentials -> Create Credentials -> OAuth client
+     ID). You only need its Client ID and Client Secret.
+  3. The first time "Export live Google Sheet" is clicked in the app, a
+     "Google Sheet Setup" window asks for that Client ID / Client Secret
+     (with a button that opens the right Cloud Console page) and writes
+     `credentials.json` for you — no manual JSON download/rename needed.
+  4. Right after that, a browser window opens asking you to sign in and
+     grant access; the resulting token is cached in `token.json` so this
+     only happens once per machine (until the token is revoked or the
+     file is deleted).
 
 Dependencies (not needed unless this feature is used):
     pip install google-auth-oauthlib google-api-python-client google-auth-httplib2
 """
+import json
 import os
 
 SCOPES = [
@@ -31,6 +36,34 @@ SCOPES = [
 
 SPREADSHEET_NAME = "RFID Time Racing"
 HEADER_ROW = ["Bib", "Team", "Start", "Finish", "Duration"]
+
+# Where the "Create Desktop app OAuth client" page lives, so the setup
+# window can send the user straight there instead of them having to
+# navigate the Cloud Console themselves.
+GOOGLE_CLOUD_CREDENTIALS_URL = "https://console.cloud.google.com/apis/credentials"
+GOOGLE_CLOUD_APIS_LIBRARY_URL = "https://console.cloud.google.com/apis/library"
+
+
+def write_credentials_file(path: str, client_id: str, client_secret: str):
+    """Writes a credentials.json in the exact shape google-auth-oauthlib's
+    InstalledAppFlow.from_client_secrets_file() expects for a Desktop app
+    OAuth client, from just the Client ID / Client Secret (no manual JSON
+    download/rename needed)."""
+    content = {
+        "installed": {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret.strip(),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(content, f, indent=2)
+
+
+def credentials_path_for(base_dir: str) -> str:
+    return os.path.join(base_dir, "credentials.json")
 
 
 class GoogleSheetError(Exception):

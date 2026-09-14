@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from tkinter import ttk, messagebox, filedialog
 
@@ -33,6 +34,7 @@ from reader_api import Reader
 from reader_exception import ReaderException
 from tag_item import Devicepara, ShowTagItem
 import util
+import gsheet_export
 from gsheet_export import GoogleSheetExporter, GoogleSheetError
 
 
@@ -184,6 +186,70 @@ class App(tk.Tk):
         if self.gsheet_connecting:
             return
 
+        creds_path = gsheet_export.credentials_path_for(_PERSIST_DIR)
+        if not os.path.isfile(creds_path):
+            self._open_gsheet_setup_window(creds_path)
+            return
+
+        self._start_gsheet_connect()
+
+    def _open_gsheet_setup_window(self, creds_path: str):
+        win = tk.Toplevel(self)
+        win.title("Google Sheet Setup")
+        win.resizable(False, False)
+        win.transient(self)
+        win.grab_set()
+
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            frame, wraplength=420, justify="left",
+            text=("One-time setup: create a Desktop app OAuth client in Google Cloud "
+                  "Console (with the Sheets and Drive APIs enabled for that project), "
+                  "then paste its Client ID and Client Secret below. This app never sees "
+                  "your Google password — only Google's own sign-in page does, in the "
+                  "browser window that opens next."),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        ttk.Button(
+            frame, text="Open Google Cloud Console (Credentials)",
+            command=lambda: webbrowser.open(gsheet_export.GOOGLE_CLOUD_CREDENTIALS_URL),
+        ).grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 4))
+        ttk.Button(
+            frame, text="Open Google Cloud Console (Enable APIs)",
+            command=lambda: webbrowser.open(gsheet_export.GOOGLE_CLOUD_APIS_LIBRARY_URL),
+        ).grid(row=2, column=0, columnspan=2, sticky="we", pady=(0, 10))
+
+        ttk.Label(frame, text="Client ID:").grid(row=3, column=0, sticky="w")
+        client_id_entry = ttk.Entry(frame, width=48)
+        client_id_entry.grid(row=4, column=0, columnspan=2, sticky="we", pady=(0, 8))
+
+        ttk.Label(frame, text="Client Secret:").grid(row=5, column=0, sticky="w")
+        client_secret_entry = ttk.Entry(frame, width=48, show="*")
+        client_secret_entry.grid(row=6, column=0, columnspan=2, sticky="we", pady=(0, 12))
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=7, column=0, columnspan=2, sticky="e")
+        ttk.Button(btn_row, text="Cancel", command=win.destroy).pack(side=tk.RIGHT, padx=4)
+
+        def on_save():
+            client_id = client_id_entry.get().strip()
+            client_secret = client_secret_entry.get().strip()
+            if not client_id or not client_secret:
+                messagebox.showinfo(win.title(), "Please fill in both Client ID and Client Secret.")
+                return
+            try:
+                gsheet_export.write_credentials_file(creds_path, client_id, client_secret)
+            except Exception as ex:
+                messagebox.showinfo(win.title(), f"Could not save credentials.json: {ex}")
+                return
+            win.destroy()
+            self._start_gsheet_connect()
+
+        ttk.Button(btn_row, text="Save & Connect", command=on_save).pack(side=tk.RIGHT, padx=4)
+
+    def _start_gsheet_connect(self):
         self.gsheet_connecting = True
         self.btn_gsheet.configure(state="disabled", text="Connecting to Google...")
         self.write_log(MessageType.Info,
