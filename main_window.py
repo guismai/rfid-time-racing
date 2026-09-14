@@ -273,8 +273,10 @@ class App(tk.Tk):
         self.gsheet_ready = True
         self.btn_gsheet.configure(state="normal", text="Export live Google Sheet")
         self._set_button_color(self.btn_gsheet, True)
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{self.gsheet_exporter.spreadsheet_id}/edit"
         self.write_log(MessageType.Info,
-                        "Google Sheet ready: 'RFID Time Racing' — passages will be pushed live.")
+                        f"Google Sheet ready: 'RFID Time Racing' — {sheet_url}")
+        webbrowser.open(sheet_url)
 
     def _on_gsheet_failed_ui(self, message: str):
         self.gsheet_connecting = False

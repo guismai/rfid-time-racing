@@ -36,6 +36,7 @@ import http.server
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import urllib.error
@@ -288,10 +289,13 @@ class GoogleSheetExporter:
         files = resp.get("files", [])
         if files:
             self.spreadsheet_id = files[0]["id"]
+            print(f"[DEBUG] gsheet: reusing existing spreadsheet id={self.spreadsheet_id} "
+                  f"(found {len(files)} match(es))", file=sys.stderr)
             return
 
         resp = self._api("POST", SHEETS_API, {"properties": {"title": SPREADSHEET_NAME}})
         self.spreadsheet_id = resp["spreadsheetId"]
+        print(f"[DEBUG] gsheet: created NEW spreadsheet id={self.spreadsheet_id}", file=sys.stderr)
 
     # ------------------------------------------------------------------------------------
     def ensure_round_tab(self, round_num: int) -> str:
@@ -381,10 +385,14 @@ class GoogleSheetExporter:
         cache = self._row_cache[tab_name]
         column = "C" if mode == "start_line" else "D"
         serial = _to_sheets_serial(timestamp)
+        print(f"[DEBUG] gsheet: push_passage sheet={self.spreadsheet_id} tab={tab_name!r} "
+              f"mode={mode} bib={bib!r} timestamp={timestamp!r} serial={serial} "
+              f"bib_in_cache={bib in cache}", file=sys.stderr)
 
         if bib in cache:
             row = cache[bib]
             self._values_update(tab_name, f"{column}{row}", [[serial]], raw=True)
+            print(f"[DEBUG] gsheet: updated existing row {row}, cell {column}{row}", file=sys.stderr)
         else:
             start_val = serial if mode == "start_line" else ""
             finish_val = serial if mode == "finish_line" else ""
@@ -393,6 +401,8 @@ class GoogleSheetExporter:
             updated_range = append_resp["updates"]["updatedRange"]  # e.g. "'Round 1'!A5:E5"
             row = int("".join(ch for ch in updated_range.split("!")[1].split(":")[0] if ch.isdigit()))
             cache[bib] = row
+            print(f"[DEBUG] gsheet: appended new row {row} (updatedRange={updated_range!r})",
+                  file=sys.stderr)
             self._values_update(
                 tab_name, f"E{row}",
                 [[_duration_formula(row)]],
