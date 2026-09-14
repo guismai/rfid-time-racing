@@ -27,10 +27,10 @@ echo Installing/upgrading PyInstaller...
 python -m pip install --upgrade pyinstaller --quiet
 
 echo.
-echo Building RFID_Time_Racing.exe (console window kept, so you still see
-echo [DEBUG]/error output if something goes wrong; remove --console once
-echo you're happy with everything and want a fully silent GUI app)...
-python -m PyInstaller --noconfirm --onefile --console --name "RFID_Time_Racing" --icon icon.ico ^
+echo Building RFID_Time_Racing.exe (no console window: --windowed. Debug
+echo [DEBUG]/error output won't be visible; if you need to see it again for
+echo troubleshooting, change --windowed back to --console below and rebuild)...
+python -m PyInstaller --noconfirm --onefile --windowed --name "RFID_Time_Racing" --icon icon.ico ^
     --add-data "lib;lib" --add-data "icon.ico;." ^
     main.py
 
