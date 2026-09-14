@@ -86,17 +86,18 @@ def credentials_path_for(base_dir: str) -> str:
 
 
 def _duration_formula(row: int) -> str:
-    """Duration formula for a given row. Defensive against legacy rows where
-    Start/Finish were stored as plain text instead of a real date-time value
-    (from an older version of this module): ISNUMBER() picks the raw serial
+    """Duration formula for a given row: a real numeric elapsed-time value
+    (Finish - Start), not text — the E column is formatted as a duration
+    ([h]:mm:ss) so Sheets displays it correctly on its own. Defensive
+    against legacy rows where Start/Finish were stored as plain text
+    instead of a real date-time value: ISNUMBER() picks the raw serial
     when present, otherwise DATEVALUE()+TIMEVALUE() explicitly parses the
-    text; IFERROR() falls back to a blank cell instead of "#ERROR!" if a
-    value truly can't be parsed either way."""
+    text."""
     def _num_or_parsed(cell):
         return f'IF(ISNUMBER({cell}),{cell},DATEVALUE({cell})+TIMEVALUE({cell}))'
     c, d = f"C{row}", f"D{row}"
-    return (f'=IFERROR(IF(AND({c}<>"",{d}<>""),'
-            f'TEXT({_num_or_parsed(d)}-{_num_or_parsed(c)},"HH:MM:SS"),""),"")')
+    return (f'=IF(AND({c}<>"",{d}<>""),'
+            f'{_num_or_parsed(d)}-{_num_or_parsed(c)},"")')
 
 
 class GoogleSheetError(Exception):
@@ -350,17 +351,30 @@ class GoogleSheetExporter:
         return self._api("POST", url, {"values": values})
 
     def _format_datetime_columns(self, tab_name: str, sheet_id: int):
-        """Formats columns C:D (Start/Finish) as date-time, once per tab, so
-        the raw serial numbers we write display as readable timestamps."""
-        self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate", {"requests": [{
-            "repeatCell": {
-                "range": {"sheetId": sheet_id, "startColumnIndex": 2, "endColumnIndex": 4},
-                "cell": {"userEnteredFormat": {"numberFormat": {
-                    "type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss",
-                }}},
-                "fields": "userEnteredFormat.numberFormat",
-            }
-        }]})
+        """Formats columns C:D (Start/Finish) as date-time and column E
+        (Duration) as an elapsed-time duration, once per tab, so the raw
+        numeric values we write display correctly without any TEXT()
+        string conversion."""
+        self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate", {"requests": [
+            {
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startColumnIndex": 2, "endColumnIndex": 4},
+                    "cell": {"userEnteredFormat": {"numberFormat": {
+                        "type": "DATE_TIME", "pattern": "yyyy-mm-dd hh:mm:ss",
+                    }}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }
+            },
+            {
+                "repeatCell": {
+                    "range": {"sheetId": sheet_id, "startColumnIndex": 4, "endColumnIndex": 5},
+                    "cell": {"userEnteredFormat": {"numberFormat": {
+                        "type": "TIME", "pattern": "[h]:mm:ss",
+                    }}},
+                    "fields": "userEnteredFormat.numberFormat",
+                }
+            },
+        ]})
 
     # ------------------------------------------------------------------------------------
     def push_passage(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
