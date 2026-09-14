@@ -37,7 +37,11 @@ number against a teams list, and export the results.
   Sheet, merging start-line and finish-line data (even from two separate
   computers) into the same "Round N" tab. See [Google Sheet export
   setup](#google-sheet-export-setup) below. The button turns **green**
-  once connected and the spreadsheet is ready.
+  once connected and the spreadsheet is ready. **Offline-resilient**: if a
+  push fails (no internet, DNS down, Google unreachable, ...), the passage
+  is queued to a local `gsheet_pending.jsonl` file instead of being lost,
+  and automatically re-sent every 15s once the connection comes back —
+  including across an app restart, since the queue is saved to disk.
 - **Log window** — full timestamped history, buffered even before the
   window is first opened.
 

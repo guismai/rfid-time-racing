@@ -334,6 +334,32 @@ class App(tk.Tk):
         self.write_log(MessageType.Info,
                         f"Google Sheet ready: 'RFID Time Racing' — {sheet_url}")
         webbrowser.open(sheet_url)
+        if self.gsheet_exporter.pending_count:
+            self.write_log(MessageType.Info,
+                            f"{self.gsheet_exporter.pending_count} passage(s) queued from a "
+                            f"previous session will be re-sent automatically.")
+        self._gsheet_retry_tick()  # starts the recurring background retry loop
+
+    def _gsheet_retry_tick(self):
+        """Every 15s while connected: if passages are queued (no internet
+        earlier), try to resend them in a background thread so a real
+        network timeout never blocks the UI."""
+        if self.gsheet_ready and self.gsheet_exporter is not None and self.gsheet_exporter.pending_count:
+            def worker():
+                sent = self.gsheet_exporter.retry_pending()
+                if sent:
+                    self.ui_queue.put(("gsheet_retry_result", sent))
+
+            threading.Thread(target=worker, daemon=True).start()
+        if self.gsheet_ready:
+            self.after(15000, self._gsheet_retry_tick)
+
+    def _on_gsheet_retry_result_ui(self, sent: int):
+        remaining = self.gsheet_exporter.pending_count if self.gsheet_exporter else 0
+        self.write_log(
+            MessageType.Info,
+            f"Connection restored: {sent} queued Google Sheet passage(s) sent"
+            + (f", {remaining} still pending" if remaining else "."))
 
     def _on_gsheet_failed_ui(self, message: str):
         self.gsheet_connecting = False
@@ -679,6 +705,8 @@ class App(tk.Tk):
                     self._on_gsheet_connected_ui()
                 elif kind == "gsheet_failed":
                     self._on_gsheet_failed_ui(item[1])
+                elif kind == "gsheet_retry_result":
+                    self._on_gsheet_retry_result_ui(item[1])
         except queue.Empty:
             pass
         self.after(80, self._pump_queue)
@@ -1229,13 +1257,18 @@ class App(tk.Tk):
                         if self.gsheet_ready and self.gsheet_exporter is not None:
                             info = self.allowed_codes[item.Code]
                             try:
-                                self.gsheet_exporter.push_passage(
+                                sent = self.gsheet_exporter.push_passage(
                                     round_num=self._get_round_number(),
                                     mode=self.race_mode_var.get(),
                                     bib=info.get("bib", ""),
                                     team=info.get("team", ""),
                                     timestamp=ts,
                                 )
+                                if not sent:
+                                    self.write_log(
+                                        MessageType.Warning,
+                                        f"No internet: Google Sheet passage queued "
+                                        f"({self.gsheet_exporter.pending_count} pending)")
                             except Exception as ex:
                                 self.write_log(MessageType.Error, "Google Sheet push failed", ex)
                 self._show_tag()

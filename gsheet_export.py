@@ -159,6 +159,9 @@ class GoogleSheetExporter:
         self._formatted_tabs: set[str] = set()
         self._sheet_ids: dict[str, int] = {}
         self._formula_sep = ","
+        self._pending_path = os.path.join(base_dir, "gsheet_pending.jsonl")
+        self._pending: list[dict] = []
+        self._load_pending()
 
     # ------------------------------------------------------------------------------------
     # OAuth
@@ -438,11 +441,12 @@ class GoogleSheetExporter:
         ]})
 
     # ------------------------------------------------------------------------------------
-    def push_passage(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
+    def _push_passage_now(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
         """mode is 'start_line' or 'finish_line'. Writes only that column; the
         Duration column formula (set when the row is created) recomputes itself
         live once both Start and Finish are present — no read-modify race
-        between two independent app instances."""
+        between two independent app instances. Raises GoogleSheetError/OSError
+        on any network or API failure (caller decides what to do)."""
         tab_name = self.ensure_round_tab(round_num)
         cache = self._row_cache[tab_name]
         column = "C" if mode == "start_line" else "D"
@@ -468,4 +472,61 @@ class GoogleSheetExporter:
                   file=sys.stderr)
             self._write_duration_formula(
                 self._sheet_ids[tab_name], row, _duration_formula(row, self._formula_sep))
+
+    # ------------------------------------------------------------------------------------
+    # Offline resilience: a passage that fails to push (no internet, DNS down,
+    # Google unreachable, ...) is queued to a local file instead of being
+    # lost, and re-sent automatically once retry_pending() succeeds again.
+    # ------------------------------------------------------------------------------------
+    def _load_pending(self):
+        self._pending: list[dict] = []
+        if not os.path.isfile(self._pending_path):
+            return
+        try:
+            with open(self._pending_path, "r", encoding="utf-8") as f:
+                self._pending = [json.loads(line) for line in f if line.strip()]
+        except Exception:
+            self._pending = []
+
+    def _save_pending(self):
+        with open(self._pending_path, "w", encoding="utf-8") as f:
+            for item in self._pending:
+                f.write(json.dumps(item) + "\n")
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    def push_passage(self, round_num: int, mode: str, bib: str, team: str, timestamp: str):
+        """Never raises: on any failure (typically no internet), the passage
+        is queued to disk and retried later via retry_pending() instead of
+        being lost. Returns True if sent immediately, False if queued."""
+        item = {"round_num": round_num, "mode": mode, "bib": bib, "team": team, "timestamp": timestamp}
+        try:
+            self._push_passage_now(**item)
+            return True
+        except (GoogleSheetError, OSError) as ex:
+            print(f"[DEBUG] gsheet: push failed ({ex}), queuing for retry "
+                  f"(pending={len(self._pending) + 1})", file=sys.stderr)
+            self._pending.append(item)
+            self._save_pending()
+            return False
+
+    def retry_pending(self) -> int:
+        """Attempts to resend queued passages, in order. Stops at the first
+        failure (still offline / Google unreachable) so the remaining queue
+        stays intact for the next retry. Returns how many were sent."""
+        sent = 0
+        while self._pending:
+            item = self._pending[0]
+            try:
+                self._push_passage_now(**item)
+            except (GoogleSheetError, OSError) as ex:
+                print(f"[DEBUG] gsheet: retry still failing ({ex}), "
+                      f"{len(self._pending)} passage(s) remain queued", file=sys.stderr)
+                break
+            self._pending.pop(0)
+            self._save_pending()
+            sent += 1
+        return sent
 

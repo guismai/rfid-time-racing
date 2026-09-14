@@ -7,3 +7,6 @@ dist/
 # Google OAuth secrets — personal to each user, never commit these
 credentials.json
 token.json
+
+# Offline retry queue for Google Sheet export — local runtime data, not code
+gsheet_pending.jsonl
