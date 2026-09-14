@@ -134,6 +134,14 @@ class App(tk.Tk):
         min_h = max(700, self.winfo_reqheight())
         self.minsize(min_w, min_h)
 
+        # Start maximized ("full screen", keeping the normal window chrome
+        # so popups/dialogs behave normally). "zoomed" is the Windows/Tk
+        # state for this; fall back to a plain geometry trick elsewhere.
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            self.attributes("-zoomed", True)  # Linux/some window managers
+
         self.cmb_region.set("Europe")  # default region
         self.on_region_changed()
 
@@ -377,28 +385,29 @@ class App(tk.Tk):
                                       textvariable=self.round_var, state="readonly")
         self.spn_round.pack(side=tk.LEFT)
 
-        # --- teams.csv / output folder (prerequisites for Start) ---------------------------
-        self.btn_teams_file = tk.Button(top, text="Teams", width=16,
-                                         command=self.on_select_teams_file)
-        self.btn_teams_file.grid(row=0, column=2, padx=4, pady=4, sticky="w")
-        self._add_tooltip(self.btn_teams_file, lambda: self.teams_file_path or "No file selected")
-
-        self.btn_output_dir = tk.Button(top, text="Results folder", width=18,
-                                         command=self.on_select_output_dir)
-        self.btn_output_dir.grid(row=0, column=3, padx=4, pady=4, sticky="w")
-        self._add_tooltip(self.btn_output_dir, lambda: self.output_dir_path or "No folder selected")
-
+        # --- Start / Stop ---------------------------------------------------------------
         self.btn_inventory = tk.Button(top, text="Start", width=10,
                                         command=self.on_inventory_click)
-        self.btn_inventory.grid(row=0, column=4, padx=4, pady=4, sticky="w")
+        self.btn_inventory.grid(row=0, column=2, padx=4, pady=4, sticky="w")
         self._bind_start_hover(self.btn_inventory)
 
         self.btn_inv_stop = tk.Button(top, text="Stop", width=10,
                                        command=self.on_inv_stop_click)
-        self.btn_inv_stop.grid(row=0, column=5, padx=4, pady=4, sticky="w")
+        self.btn_inv_stop.grid(row=0, column=3, padx=4, pady=4, sticky="w")
         self.btn_inv_stop.bind("<Enter>", lambda e: self.btn_inv_stop.configure(bg="#e53935", fg="white"))
         self.btn_inv_stop.bind("<Leave>", lambda e: self.btn_inv_stop.configure(
             bg=self._default_btn_bg, fg=self._default_btn_fg))
+
+        # --- teams.csv / output folder (prerequisites for Start) ---------------------------
+        self.btn_teams_file = tk.Button(top, text="Teams", width=16,
+                                         command=self.on_select_teams_file)
+        self.btn_teams_file.grid(row=0, column=4, padx=4, pady=4, sticky="w")
+        self._add_tooltip(self.btn_teams_file, lambda: self.teams_file_path or "No file selected")
+
+        self.btn_output_dir = tk.Button(top, text="Results folder", width=18,
+                                         command=self.on_select_output_dir)
+        self.btn_output_dir.grid(row=0, column=5, padx=4, pady=4, sticky="w")
+        self._add_tooltip(self.btn_output_dir, lambda: self.output_dir_path or "No folder selected")
 
         self.btn_toggle_dev = tk.Button(top, text="Device Parameters", width=18,
                                          command=lambda: self._toggle_popup(self.dev_window))
@@ -417,8 +426,12 @@ class App(tk.Tk):
         self.btn_toggle_results = tk.Button(bottom_band, text="Results", width=14,
                                              command=lambda: self._toggle_popup(self.results_window))
         self.btn_toggle_results.pack(side=tk.RIGHT, padx=4)
-        self.btn_open_log = tk.Button(bottom_band, text="Log", width=10, command=self.open_log_window)
-        self.btn_open_log.pack(side=tk.LEFT, padx=4)
+        # The Log window is a debugging aid; hide it in the packaged .exe for
+        # a cleaner end-user experience (still fully available when running
+        # from source with `python main.py`).
+        if not getattr(sys, "frozen", False):
+            self.btn_open_log = tk.Button(bottom_band, text="Log", width=10, command=self.open_log_window)
+            self.btn_open_log.pack(side=tk.LEFT, padx=4)
         self.btn_toggle_capture = tk.Button(bottom_band, text="Capture RFID", width=14,
                                              command=lambda: self._toggle_popup(self.capture_window))
         self.btn_toggle_capture.pack(side=tk.LEFT, padx=4)
