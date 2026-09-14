@@ -79,7 +79,6 @@ class App(tk.Tk):
         super().__init__()
         self.title("RFID Time racing")
         self.geometry("1020x700")
-        self.minsize(1020, 700)  # can't be shrunk below this, but can still be maximized
         self._set_window_icon()
 
         # --- state -----------------------
@@ -125,6 +124,15 @@ class App(tk.Tk):
         self._build_ui()
         self.after(80, self._pump_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Compute the minimum size from the actual widgets now that they all
+        # exist (button row width grows over time as buttons get added —
+        # e.g. "Frequency" was getting clipped with the old hardcoded 1020px
+        # minimum). Still can't be shrunk below this, but can be maximized.
+        self.update_idletasks()
+        min_w = max(1020, self.winfo_reqwidth())
+        min_h = max(700, self.winfo_reqheight())
+        self.minsize(min_w, min_h)
 
         self.cmb_region.set("Europe")  # default region
         self.on_region_changed()
