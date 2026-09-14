@@ -39,8 +39,16 @@ from gsheet_export import GoogleSheetExporter, GoogleSheetError
 STOP_INVENTORY_TIMEOUT_MS = 10000
 PAGE_LINES = 30  # rows shown at a time (kept for parity with the original paging fields)
 
-_APP_DIR = (sys._MEIPASS if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS")
-            else os.path.dirname(os.path.abspath(__file__)))
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    # PyInstaller --onefile: bundled read-only resources (icon.ico, lib/...)
+    # are extracted fresh into a temp dir on every launch.
+    _APP_DIR = sys._MEIPASS
+    # User-provided / persisted files (credentials.json, token.json, ...)
+    # must instead live next to the actual .exe, or they'd vanish/be
+    # unreachable the moment the temp extraction dir is gone.
+    _PERSIST_DIR = os.path.dirname(sys.executable)
+else:
+    _APP_DIR = _PERSIST_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class MessageType:
@@ -183,7 +191,7 @@ class App(tk.Tk):
 
         def worker():
             try:
-                exporter = GoogleSheetExporter(_APP_DIR)
+                exporter = GoogleSheetExporter(_PERSIST_DIR)
                 exporter.connect()  # blocking: opens the browser for sign-in if needed
                 self.gsheet_exporter = exporter
                 self.ui_queue.put(("gsheet_connected",))
