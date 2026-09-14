@@ -85,6 +85,20 @@ def credentials_path_for(base_dir: str) -> str:
     return os.path.join(base_dir, "credentials.json")
 
 
+def _duration_formula(row: int) -> str:
+    """Duration formula for a given row. Defensive against legacy rows where
+    Start/Finish were stored as plain text instead of a real date-time value
+    (from an older version of this module): ISNUMBER() picks the raw serial
+    when present, otherwise DATEVALUE()+TIMEVALUE() explicitly parses the
+    text; IFERROR() falls back to a blank cell instead of "#ERROR!" if a
+    value truly can't be parsed either way."""
+    def _num_or_parsed(cell):
+        return f'IF(ISNUMBER({cell}),{cell},DATEVALUE({cell})+TIMEVALUE({cell}))'
+    c, d = f"C{row}", f"D{row}"
+    return (f'=IFERROR(IF(AND({c}<>"",{d}<>""),'
+            f'TEXT({_num_or_parsed(d)}-{_num_or_parsed(c)},"HH:MM:SS"),""),"")')
+
+
 class GoogleSheetError(Exception):
     pass
 
@@ -129,6 +143,7 @@ class GoogleSheetExporter:
         self.spreadsheet_id: str | None = None
         # per-tab cache: {round_tab_name: {bib: row_number}}
         self._row_cache: dict[str, dict[str, int]] = {}
+        self._formatted_tabs: set[str] = set()
 
     # ------------------------------------------------------------------------------------
     # OAuth
@@ -287,15 +302,26 @@ class GoogleSheetExporter:
         """Makes sure a 'Round <N>' tab exists (with the header row), returns its name."""
         tab_name = f"Round {round_num}"
         meta = self._api("GET", f"{SHEETS_API}/{self.spreadsheet_id}")
-        existing_titles = [s["properties"]["title"] for s in meta.get("sheets", [])]
+        sheet_id = None
+        for s in meta.get("sheets", []):
+            if s["properties"]["title"] == tab_name:
+                sheet_id = s["properties"]["sheetId"]
+                break
 
-        if tab_name not in existing_titles:
+        if sheet_id is None:
             add_resp = self._api(
                 "POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate",
                 {"requests": [{"addSheet": {"properties": {"title": tab_name}}}]})
             sheet_id = add_resp["replies"][0]["addSheet"]["properties"]["sheetId"]
             self._values_update(tab_name, "A1:E1", [HEADER_ROW])
+
+        # Apply/refresh the Start/Finish date-time format once per tab per
+        # session — harmless to repeat, and also fixes tabs that were
+        # created by an older version of this module before this format
+        # was introduced.
+        if tab_name not in self._formatted_tabs:
             self._format_datetime_columns(tab_name, sheet_id)
+            self._formatted_tabs.add(tab_name)
 
         if tab_name not in self._row_cache:
             self._row_cache[tab_name] = self._load_bib_rows(tab_name)
@@ -360,6 +386,6 @@ class GoogleSheetExporter:
             cache[bib] = row
             self._values_update(
                 tab_name, f"E{row}",
-                [[f'=IF(AND(C{row}<>"",D{row}<>""),TEXT(D{row}-C{row},"HH:MM:SS"),"")']],
+                [[_duration_formula(row)]],
             )
 
