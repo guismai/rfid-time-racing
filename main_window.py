@@ -33,6 +33,7 @@ from reader_api import Reader
 from reader_exception import ReaderException
 from tag_item import Devicepara, ShowTagItem
 import util
+from gsheet_export import GoogleSheetExporter, GoogleSheetError
 
 
 STOP_INVENTORY_TIMEOUT_MS = 10000
@@ -78,6 +79,11 @@ class App(tk.Tk):
         self.race_csv_writer = None
         self.race_csv_path: str | None = None
         self._last_export_dir: str | None = None
+
+        # Live Google Sheet export (see gsheet_export.py)
+        self.gsheet_exporter: GoogleSheetExporter | None = None
+        self.gsheet_ready = False  # True once connected + spreadsheet confirmed
+        self.gsheet_connecting = False
 
         self.ui_queue: "queue.Queue" = queue.Queue()
         self._tags_lock = threading.Lock()
@@ -147,6 +153,62 @@ class App(tk.Tk):
         if inventory is actually running, or the default color otherwise."""
         button.bind("<Enter>", lambda e: button.configure(bg="#4caf50", fg="white"))
         button.bind("<Leave>", lambda e: self._set_start_button_color(self.in_inventory))
+
+    # ------------------------------------------------------------------------------------
+    # Live Google Sheet export
+    # ------------------------------------------------------------------------------------
+    def _ensure_gsheet_round_tab(self):
+        """Best-effort: if the Google Sheet export is active, make sure this
+        round's tab exists before the race starts (surfaces problems early
+        instead of only on the first passage). Never blocks the race from
+        starting — failures just log a warning."""
+        if not (self.gsheet_ready and self.gsheet_exporter is not None):
+            return
+        try:
+            self.gsheet_exporter.ensure_round_tab(self._get_round_number())
+        except Exception as ex:
+            self.write_log(MessageType.Warning, "Could not prepare the Google Sheet round tab", ex)
+
+    def on_gsheet_button_click(self):
+        if self.gsheet_ready:
+            messagebox.showinfo(self.title(), "Google Sheet export is already configured and active.")
+            return
+        if self.gsheet_connecting:
+            return
+
+        self.gsheet_connecting = True
+        self.btn_gsheet.configure(state="disabled", text="Connecting to Google...")
+        self.write_log(MessageType.Info,
+                        "Connecting to Google Sheets (a browser window may open for sign-in)...")
+
+        def worker():
+            try:
+                exporter = GoogleSheetExporter(_APP_DIR)
+                exporter.connect()  # blocking: opens the browser for sign-in if needed
+                self.gsheet_exporter = exporter
+                self.ui_queue.put(("gsheet_connected",))
+            except GoogleSheetError as ex:
+                self.ui_queue.put(("gsheet_failed", str(ex)))
+            except Exception as ex:
+                self.ui_queue.put(("gsheet_failed", f"Unexpected error: {ex}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_gsheet_connected_ui(self):
+        self.gsheet_connecting = False
+        self.gsheet_ready = True
+        self.btn_gsheet.configure(state="normal", text="Export live Google Sheet")
+        self._set_button_color(self.btn_gsheet, True)
+        self.write_log(MessageType.Info,
+                        "Google Sheet ready: 'RFID Time Racing' — passages will be pushed live.")
+
+    def _on_gsheet_failed_ui(self, message: str):
+        self.gsheet_connecting = False
+        self.gsheet_exporter = None
+        self.btn_gsheet.configure(state="normal", text="Export live Google Sheet")
+        self._set_button_color(self.btn_gsheet, False)
+        self.write_log(MessageType.Error, "Google Sheet connection failed: ", message)
+        messagebox.showinfo(self.title(), f"Google Sheet connection failed:\n{message}")
 
     def _build_ui(self):
         root_pad = {"padx": 6, "pady": 6}
@@ -221,6 +283,9 @@ class App(tk.Tk):
                                              command=lambda: self._toggle_popup(self.results_window))
         self.btn_toggle_results.grid(row=0, column=8, padx=(30, 4), pady=4, sticky="w")
 
+        self.btn_gsheet = tk.Button(top, text="Export live Google Sheet", width=24,
+                                     command=self.on_gsheet_button_click)
+        self.btn_gsheet.grid(row=0, column=9, padx=4, pady=4, sticky="w")
 
         # --- USB Connect (popup window content) --------------------------------------
 
@@ -461,6 +526,10 @@ class App(tk.Tk):
                     self._show_tag_ui()
                 elif kind == "inventory_end":
                     self._on_inventory_end_ui()
+                elif kind == "gsheet_connected":
+                    self._on_gsheet_connected_ui()
+                elif kind == "gsheet_failed":
+                    self._on_gsheet_failed_ui(item[1])
         except queue.Empty:
             pass
         self.after(80, self._pump_queue)
@@ -1001,6 +1070,19 @@ class App(tk.Tk):
                                 self.race_csv_file.flush()
                             except Exception as ex:
                                 self.write_log(MessageType.Error, "Real-time CSV write failed", ex)
+
+                        if self.gsheet_ready and self.gsheet_exporter is not None:
+                            info = self.allowed_codes[item.Code]
+                            try:
+                                self.gsheet_exporter.push_passage(
+                                    round_num=self._get_round_number(),
+                                    mode=self.race_mode_var.get(),
+                                    bib=info.get("bib", ""),
+                                    team=info.get("team", ""),
+                                    timestamp=ts,
+                                )
+                            except Exception as ex:
+                                self.write_log(MessageType.Error, "Google Sheet push failed", ex)
                 self._show_tag()
             self._show_tag()
             self.ui_queue.put(("inventory_end",))
@@ -1075,6 +1157,7 @@ class App(tk.Tk):
                     return
                 self._prompt_teams_file()  # may raise (cancelled, invalid file)
                 self._start_race_csv()  # may raise (cancelled, write error)
+                self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
                 self.on_clear_allowed_log()
 
@@ -1110,6 +1193,7 @@ class App(tk.Tk):
                     return
                 self._prompt_teams_file()  # may raise (cancelled, invalid file)
                 self._start_race_csv()
+                self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
                 self.on_clear_allowed_log()
 

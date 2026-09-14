@@ -3,3 +3,7 @@ __pycache__/
 build/
 dist/
 *.spec
+
+# Google OAuth secrets — personal to each user, never commit these
+credentials.json
+token.json

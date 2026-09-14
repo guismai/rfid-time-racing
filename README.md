@@ -33,6 +33,11 @@ number against a teams list, and export the results.
 - **Results** — pick a start_line file and a finish_line file (same
   round), and it cross-references every bib to compute Start / Finish /
   Duration, sorted fastest first, with an **Export CSV** button.
+- **Export live Google Sheet** — pushes every passage live to a Google
+  Sheet, merging start-line and finish-line data (even from two separate
+  computers) into the same "Round N" tab. See [Google Sheet export
+  setup](#google-sheet-export-setup) below. The button turns **green**
+  once connected and the spreadsheet is ready.
 - **Log window** — full timestamped history, buffered even before the
   window is first opened.
 
@@ -49,9 +54,41 @@ number against a teams list, and export the results.
 | `tag_item.py` | Interop structs (`TagInfo`, `Devicepara`) and tag value objects |
 | `util.py` | Hex/decimal parsing, CRC16 |
 | `arch_check.py` | Warns at startup if Python isn't 32-bit (see below) |
+| `gsheet_export.py` | Google Sheets live export (OAuth + Sheets/Drive API) |
 | `lib/` | Bundled `UHFPrimeReader.dll` + `hidapi.dll` |
 | `icon.ico` | App icon |
 | `build_exe.bat` | Builds a standalone Windows `.exe` with PyInstaller |
+
+## Google Sheet export setup
+
+The **Export live Google Sheet** button needs a one-time setup per Google
+account, since it can't create its own Google Cloud project on your
+behalf:
+
+1. Install the extra dependencies:
+   ```bash
+   pip install google-auth-oauthlib google-api-python-client google-auth-httplib2
+   ```
+2. In the [Google Cloud Console](https://console.cloud.google.com/), create
+   (or pick) a project, then enable the **Google Sheets API** and the
+   **Google Drive API** for it.
+3. Under *APIs & Services → Credentials*, create an **OAuth client ID** of
+   type **Desktop app**, download its JSON, and save it as
+   `credentials.json` next to `main.py` (or next to the built `.exe`).
+4. Click **Export live Google Sheet**: a browser window opens asking you to
+   sign in and grant access. The resulting token is cached in `token.json`
+   next to `credentials.json`, so this only happens once per machine.
+
+Once connected, a spreadsheet named **"RFID Time Racing"** is created (if
+it doesn't already exist) at the root of your Drive, with one tab per
+round (**"Round 1"**, **"Round 2"**, ...). A start-line station only ever
+writes the *Start* column for a bib, a finish-line station only the
+*Finish* column; the *Duration* column is a live formula that resolves
+itself once both are present — so two independent stations (even on
+different computers) merge correctly without stepping on each other.
+
+`credentials.json` and `token.json` are personal secrets — they're already
+excluded via `.gitignore` and must never be committed or shared.
 
 ## The reader DLL
 
@@ -81,6 +118,9 @@ Tkinter dialog) before you even try to open the reader.
   `sudo apt install python3-tk`)
 - `pyserial` **optional** — only used to auto-list COM ports if a serial
   fallback is ever added; not required for normal USB/HID use.
+- `google-auth-oauthlib`, `google-api-python-client`, `google-auth-httplib2`
+  **optional** — only needed for the **Export live Google Sheet** button
+  (see [Google Sheet export setup](#google-sheet-export-setup)).
 
 ## Running
 
