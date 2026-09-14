@@ -392,6 +392,25 @@ class GoogleSheetExporter:
             }
         }]})
 
+    def _write_duration_formula(self, sheet_id: int, row: int, formula: str):
+        """Same atomic value+format trick as _write_date_cell, applied to the
+        Duration formula: writing it via a plain values.update on a cell
+        that was previously blank-but-preformatted drops the duration
+        number format, leaving a raw day-fraction number like
+        '0.0001388888923' instead of '0:00:12'."""
+        self._api("POST", f"{SHEETS_API}/{self.spreadsheet_id}:batchUpdate", {"requests": [{
+            "updateCells": {
+                "start": {"sheetId": sheet_id, "rowIndex": row - 1, "columnIndex": 4},  # E
+                "rows": [{"values": [{
+                    "userEnteredValue": {"formulaValue": formula},
+                    "userEnteredFormat": {"numberFormat": {
+                        "type": "TIME", "pattern": "[h]:mm:ss",
+                    }},
+                }]}],
+                "fields": "userEnteredValue,userEnteredFormat.numberFormat",
+            }
+        }]})
+
     def _format_datetime_columns(self, tab_name: str, sheet_id: int):
         """Formats columns C:D (Start/Finish) as date-time and column E
         (Duration) as an elapsed-time duration, once per tab, so the raw
@@ -447,8 +466,6 @@ class GoogleSheetExporter:
             cache[bib] = row
             print(f"[DEBUG] gsheet: appended new row {row} (updatedRange={updated_range!r})",
                   file=sys.stderr)
-            self._values_update(
-                tab_name, f"E{row}",
-                [[_duration_formula(row, self._formula_sep)]],
-            )
+            self._write_duration_formula(
+                self._sheet_ids[tab_name], row, _duration_formula(row, self._formula_sep))
 
