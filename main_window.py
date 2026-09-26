@@ -112,9 +112,10 @@ class App(tk.Tk):
             DEFAULT_RESULTS_DIR if os.path.isdir(DEFAULT_RESULTS_DIR) else None
         )
 
-        # Live Google Sheet export (see gsheet_export.py)
+        # Google Sheet export (see gsheet_export.py)
         self.gsheet_exporter: GoogleSheetExporter | None = None
-        self.gsheet_ready = False  # True once connected + spreadsheet confirmed
+        self.gsheet_ready = False  # True once connected + spreadsheet confirmed (shared infra)
+        self.gsheet_live_enabled = False  # True only once "Export live Google Sheet" succeeds
         self.gsheet_connecting = False
         self._gsheet_pending_action = None
 
@@ -325,11 +326,11 @@ class App(tk.Tk):
     # Live Google Sheet export
     # ------------------------------------------------------------------------------------
     def _ensure_gsheet_round_tab(self):
-        """Best-effort: if the Google Sheet export is active, make sure this
+        """Best-effort: if live Google Sheet export is enabled, make sure this
         round's tab exists before the race starts (surfaces problems early
         instead of only on the first passage). Never blocks the race from
         starting — failures just log a warning."""
-        if not (self.gsheet_ready and self.gsheet_exporter is not None):
+        if not (self.gsheet_live_enabled and self.gsheet_exporter is not None):
             return
         try:
             self.gsheet_exporter.ensure_round_tab(self._get_round_number())
@@ -337,10 +338,10 @@ class App(tk.Tk):
             self.write_log(MessageType.Warning, "Could not prepare the Google Sheet round tab", ex)
 
     def on_gsheet_button_click(self):
-        if self.gsheet_ready:
+        if self.gsheet_live_enabled:
             messagebox.showinfo(self.title(), "Google Sheet export is already configured and active.")
             return
-        self._ensure_gsheet_ready(lambda: None)
+        self._ensure_gsheet_ready(self._enable_live_export)
 
     def _ensure_gsheet_ready(self, then):
         """Runs `then` once the Google Sheet connection is ready, connecting
@@ -467,23 +468,32 @@ class App(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_gsheet_connected_ui(self):
+        """Generic 'Google connection established' handler — shared by both
+        the live-export button and the batch-export button. Does NOT itself
+        turn on live per-passage pushing; only _enable_live_export does."""
         self.gsheet_connecting = False
         self.gsheet_ready = True
         self.btn_gsheet.configure(state="normal", text="Export live Google Sheet")
-        self._set_button_color(self.btn_gsheet, True)
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{self.gsheet_exporter.spreadsheet_id}/edit"
-        self.write_log(MessageType.Info,
-                        f"Google Sheet ready: 'RFID Time Racing' — {sheet_url}")
-        webbrowser.open(sheet_url)
-        if self.gsheet_exporter.pending_count:
-            self.write_log(MessageType.Info,
-                            f"{self.gsheet_exporter.pending_count} passage(s) queued from a "
-                            f"previous session will be re-sent automatically.")
         self._gsheet_retry_tick()  # starts the recurring background retry loop
 
         action, self._gsheet_pending_action = self._gsheet_pending_action, None
         if action:
             action()
+
+    def _enable_live_export(self):
+        """Runs only when the "Export live Google Sheet" button is the one
+        that connected (or re-uses an already-open connection): turns on
+        per-passage live pushing specifically."""
+        self.gsheet_live_enabled = True
+        self._set_button_color(self.btn_gsheet, True)
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{self.gsheet_exporter.spreadsheet_id}/edit"
+        self.write_log(MessageType.Info,
+                        f"Live export enabled: 'RFID Time Racing' — {sheet_url}")
+        webbrowser.open(sheet_url)
+        if self.gsheet_exporter.pending_count:
+            self.write_log(MessageType.Info,
+                            f"{self.gsheet_exporter.pending_count} passage(s) queued from a "
+                            f"previous session will be re-sent automatically.")
 
     def _gsheet_retry_tick(self):
         """Every 15s while connected: if passages are queued (no internet
@@ -1460,7 +1470,7 @@ class App(tk.Tk):
                             except Exception as ex:
                                 self.write_log(MessageType.Error, "Real-time CSV write failed", ex)
 
-                        if self.gsheet_ready and self.gsheet_exporter is not None:
+                        if self.gsheet_live_enabled and self.gsheet_exporter is not None:
                             info = self.allowed_codes[item.Code]
                             try:
                                 sent = self.gsheet_exporter.push_passage(
