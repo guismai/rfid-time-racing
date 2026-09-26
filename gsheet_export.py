@@ -15,7 +15,10 @@ the same spreadsheet, simply by both targeting the same round tab.
 
 Setup required (one-time, per Google account):
   1. In Google Cloud Console, create/select a project and enable the
-     "Google Sheets API" and "Google Drive API".
+     "Google Sheets API" (no Drive API needed — the spreadsheet's ID is
+     remembered locally in spreadsheet_id.txt instead of being searched
+     for via Drive, which also avoids the broader Drive permission scope
+     and its "unverified app" warning screen).
   2. Create an OAuth 2.0 Client ID of type "Desktop app" (Cloud Console ->
      APIs & Services -> Credentials -> Create Credentials -> OAuth client
      ID). You only need its Client ID and Client Secret.
@@ -48,11 +51,15 @@ from datetime import datetime
 AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
-DRIVE_API = "https://www.googleapis.com/drive/v3/files"
 
+# Only the Sheets scope is needed: the spreadsheet's ID is remembered
+# locally (see _ensure_spreadsheet) instead of being searched for via the
+# Drive API, so no Drive scope/consent is required at all. (drive.file
+# only grants access to files this app itself opened via Drive's UI/picker
+# — it does NOT allow a files.list search across Drive, which is why that
+# approach failed with a 403 "insufficient authentication scopes".)
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
 ]
 
 SPREADSHEET_NAME = "RFID Time Racing"
@@ -160,6 +167,7 @@ class GoogleSheetExporter:
         self._sheet_ids: dict[str, int] = {}
         self._formula_sep = ","
         self._pending_path = os.path.join(base_dir, "gsheet_pending.jsonl")
+        self._spreadsheet_id_path = os.path.join(base_dir, "spreadsheet_id.txt")
         self._pending: list[dict] = []
         self._load_pending()
 
@@ -300,23 +308,38 @@ class GoogleSheetExporter:
 
     # ------------------------------------------------------------------------------------
     def _ensure_spreadsheet(self):
-        query = (
-            f"name = '{SPREADSHEET_NAME}' and "
-            "mimeType = 'application/vnd.google-apps.spreadsheet' and "
-            "'root' in parents and trashed = false"
-        )
-        url = DRIVE_API + "?" + urllib.parse.urlencode({"q": query, "fields": "files(id,name)"})
-        resp = self._api("GET", url)
-        files = resp.get("files", [])
-        if files:
-            self.spreadsheet_id = files[0]["id"]
-            print(f"[DEBUG] gsheet: reusing existing spreadsheet id={self.spreadsheet_id} "
-                  f"(found {len(files)} match(es))", file=sys.stderr)
-            return
+        """Reuses the spreadsheet ID remembered from a previous run (see
+        _spreadsheet_id_path) if it's still valid, otherwise creates a new
+        spreadsheet and remembers its ID for next time. No Drive API call
+        involved (see the SCOPES comment for why)."""
+        stored_id = None
+        if os.path.isfile(self._spreadsheet_id_path):
+            try:
+                with open(self._spreadsheet_id_path, "r", encoding="utf-8") as f:
+                    stored_id = f.read().strip() or None
+            except OSError:
+                stored_id = None
+
+        if stored_id:
+            try:
+                self._api("GET", f"{SHEETS_API}/{stored_id}?fields=spreadsheetId")
+                self.spreadsheet_id = stored_id
+                print(f"[DEBUG] gsheet: reusing remembered spreadsheet id={stored_id}",
+                      file=sys.stderr)
+                return
+            except GoogleSheetError as ex:
+                print(f"[DEBUG] gsheet: remembered spreadsheet id={stored_id} is no longer "
+                      f"valid ({ex}), creating a new one", file=sys.stderr)
 
         resp = self._api("POST", SHEETS_API, {"properties": {"title": SPREADSHEET_NAME}})
         self.spreadsheet_id = resp["spreadsheetId"]
         print(f"[DEBUG] gsheet: created NEW spreadsheet id={self.spreadsheet_id}", file=sys.stderr)
+        try:
+            with open(self._spreadsheet_id_path, "w", encoding="utf-8") as f:
+                f.write(self.spreadsheet_id)
+        except OSError as ex:
+            print(f"[DEBUG] gsheet: could not remember spreadsheet id ({ex}); it will be "
+                  f"re-created next run", file=sys.stderr)
 
     # ------------------------------------------------------------------------------------
     def ensure_round_tab(self, round_num: int) -> str:

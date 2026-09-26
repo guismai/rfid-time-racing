@@ -74,8 +74,8 @@ where packages like `cryptography` often have no prebuilt wheel and
 would otherwise require a full MSVC/Rust toolchain just to install).
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create
-   (or pick) a project, then enable the **Google Sheets API** and the
-   **Google Drive API** for it.
+   (or pick) a project, then enable the **Google Sheets API** for it (no
+   Drive API needed — see below).
 2. Under *APIs & Services → Credentials*, create an **OAuth client ID** of
    type **Desktop app**. Keep its **Client ID** and **Client Secret** handy
    — you don't need to download or rename any JSON file yourself.
