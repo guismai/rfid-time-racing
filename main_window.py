@@ -321,6 +321,10 @@ class App(tk.Tk):
         self._clear_session_state()  # the restored state is now live in memory; a fresh
                                       # file will be written again on the next passage/Start
 
+    # ------------------------------------------------------------------------------------
+    # Live Google Sheet export
+    # ------------------------------------------------------------------------------------
+    def _ensure_gsheet_round_tab(self):
         """Best-effort: if the Google Sheet export is active, make sure this
         round's tab exists before the race starts (surfaces problems early
         instead of only on the first passage). Never blocks the race from
