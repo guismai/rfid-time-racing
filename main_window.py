@@ -94,6 +94,7 @@ class App(tk.Tk):
 
         self.tags: dict[bytes, ShowTagItem] = {}     # by code, for de-dup (m_tags)
         self.tags_ordered: list[ShowTagItem] = []      # in received order (m_tags2)
+        self.capture_team: dict[bytes, str] = {}       # code -> team name, edited in Capture RFID
         self.inv_tag_count = 0
         self.inv_time_ms = 1
         self.inv_start_tick = 0.0
@@ -679,13 +680,16 @@ class App(tk.Tk):
         left = ttk.Frame(mid)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        columns = ("no", "code", "len", "count", "rssi", "channel")
-        headers = {"no": "No.", "code": "Data", "len": "Len",
-                   "count": "Cnt(Ant1/2/3/4)", "rssi": "RSSI(dBm)", "channel": "Channel"}
-        widths = {"no": 40, "code": 320, "len": 50, "count": 110, "rssi": 90, "channel": 70}
+        columns = ("no", "code", "len", "count", "rssi", "channel", "team")
+        headers = {"no": "Bib", "code": "RFID", "len": "Len",
+                   "count": "Cnt(Ant1/2/3/4)", "rssi": "RSSI(dBm)", "channel": "Channel",
+                   "team": "Team"}
+        widths = {"no": 40, "code": 320, "len": 50, "count": 110, "rssi": 90, "channel": 70,
+                  "team": 140}
 
-        # --- Capture RFID popup: the raw detected-tags list lives here, with only
-        # Export and Clear as actions. ------------------------------------------------
+        # --- Capture RFID popup: builds default.csv (bib;rfid;team). The bib is
+        # simply the tag's scan order (1st tag seen = bib 1, etc.); Team is
+        # editable by double-clicking its cell. Export/Clear act on this list.
         self.capture_window = self._create_hidden_popup("Capture RFID", resizable=True)
         capture_frame = ttk.Frame(self.capture_window, padding=8)
         capture_frame.pack(fill=tk.BOTH, expand=True)
@@ -716,6 +720,7 @@ class App(tk.Tk):
             self.lsv_tags.column(c, width=widths[c], anchor="center")
         self.lsv_tags.tag_configure("allowed", background="#c8f7c5")
         self.lsv_tags.tag_configure("denied", background="#f7c5c5")
+        self.lsv_tags.bind("<Double-1>", self._on_capture_team_double_click)
         tags_vsb = ttk.Scrollbar(tags_frame, orient="vertical", command=self.lsv_tags.yview)
         self.lsv_tags.configure(yscrollcommand=tags_vsb.set)
         self.lsv_tags.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1311,6 +1316,7 @@ class App(tk.Tk):
                     sitem.counts_to_string(),
                     sitem.Rssi // 10,
                     sitem.Channel,
+                    self.capture_team.get(sitem.Code, ""),
                 ))
         else:
             for idx, sitem in enumerate(rows):
@@ -1319,9 +1325,54 @@ class App(tk.Tk):
                 self.lsv_tags.set(iid, "count", sitem.counts_to_string())
                 self.lsv_tags.set(iid, "rssi", sitem.Rssi // 10)
                 self.lsv_tags.set(iid, "channel", sitem.Channel)
+                self.lsv_tags.set(iid, "team", self.capture_team.get(sitem.Code, ""))
                 self.lsv_tags.item(iid, tags=row_tags)
 
         self._refresh_allowed_log_ui()
+
+    def _on_capture_team_double_click(self, event):
+        """Lets the user type a team name directly into the Capture RFID
+        list by double-clicking the Team cell of a row."""
+        if self.lsv_tags.identify("region", event.x, event.y) != "cell":
+            return
+        row_id = self.lsv_tags.identify_row(event.y)
+        col_id = self.lsv_tags.identify_column(event.x)
+        if not row_id or col_id != "#7":  # "#7" = the "team" column
+            return
+        try:
+            idx = int(row_id)
+        except ValueError:
+            return
+        with self._tags_lock:
+            if idx >= len(self.tags_ordered):
+                return
+            code = self.tags_ordered[idx].Code
+
+        bbox = self.lsv_tags.bbox(row_id, col_id)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+
+        entry = tk.Entry(self.lsv_tags)
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.insert(0, self.capture_team.get(code, ""))
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+
+        def commit(_event=None):
+            if not entry.winfo_exists():
+                return
+            self.capture_team[code] = entry.get().strip()
+            entry.destroy()
+            self._show_tag_ui()
+
+        def cancel(_event=None):
+            if entry.winfo_exists():
+                entry.destroy()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>", cancel)
 
     def _refresh_allowed_log_ui(self):
         """Appends new entries to the log (append-only, never updates an existing row)."""
@@ -1597,6 +1648,7 @@ class App(tk.Tk):
         with self._tags_lock:
             self.tags.clear()
             self.tags_ordered.clear()
+            self.capture_team.clear()
 
     def on_clear_allowed_log(self):
         self.lsv_allowed_log.delete(*self.lsv_allowed_log.get_children())
@@ -1744,24 +1796,35 @@ class App(tk.Tk):
             messagebox.showinfo(self.title(), f"Export failed: {ex}")
 
     def on_export_tags(self):
+        """Exports the Capture RFID list as a teams.csv (bib;rfid;team) file —
+        bib is the tag's scan order, team is whatever was typed in via
+        double-click. Defaults to Teams/default.csv, the file auto-loaded
+        as the race's teams list on startup."""
         with self._tags_lock:
             rows = list(self.tags_ordered)
         if not rows:
             messagebox.showinfo(self.title(), "No tag detected to export yet")
             return
         path = filedialog.asksaveasfilename(
-            title="Export the list of detected tags",
-            defaultextension=".txt",
-            filetypes=[("Text file", "*.txt"), ("All files", "*.*")],
+            title="Export as teams.csv (bib;rfid;team)",
+            initialdir=DEFAULT_TEAMS_DIR if os.path.isdir(DEFAULT_TEAMS_DIR) else os.getcwd(),
+            initialfile="default.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV file", "*.csv"), ("All files", "*.*")],
         )
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("# List of detected RFID tags — one per line (hex code)\n")
-                for sitem in rows:
-                    f.write(util.hex_array_to_string(sitem.Code) + "\n")
-            self.write_log(MessageType.Info, f"List exported ({len(rows)} tag(s)) to {path}")
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, delimiter=";")
+                writer.writerow(["bib", "rfid", "team"])
+                for idx, sitem in enumerate(rows):
+                    writer.writerow([
+                        idx + 1,
+                        util.hex_array_to_string(sitem.Code),
+                        self.capture_team.get(sitem.Code, ""),
+                    ])
+            self.write_log(MessageType.Info, f"Teams file exported ({len(rows)} tag(s)) to {path}")
         except Exception as ex:
             messagebox.showinfo(self.title(), f"Export failed: {ex}")
 
