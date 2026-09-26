@@ -17,6 +17,7 @@ worker thread posts to, drained periodically on the main thread via
 `root.after(...)` (see `_pump_queue`).
 """
 import csv
+import json
 import os
 import queue
 import re
@@ -58,6 +59,7 @@ DEFAULT_RESULTS_DIR = os.path.join(DEFAULT_APP_DIR, "Results")
 DEFAULT_TEAMS_DIR = os.path.join(DEFAULT_APP_DIR, "Teams")
 DEFAULT_TEAMS_FILE = os.path.join(DEFAULT_TEAMS_DIR, "default.csv")
 DEFAULT_GOOGLE_DIR = os.path.join(DEFAULT_APP_DIR, "Google")
+SESSION_STATE_FILE = os.path.join(DEFAULT_APP_DIR, "session_state.json")
 
 
 def _ensure_default_folders():
@@ -113,6 +115,7 @@ class App(tk.Tk):
         self.gsheet_exporter: GoogleSheetExporter | None = None
         self.gsheet_ready = False  # True once connected + spreadsheet confirmed
         self.gsheet_connecting = False
+        self._gsheet_pending_action = None
 
         self.ui_queue: "queue.Queue" = queue.Queue()
         self._tags_lock = threading.Lock()
@@ -148,6 +151,7 @@ class App(tk.Tk):
 
         self._auto_load_teams_file()
         self.after(200, self._auto_connect_usb)
+        self.after(400, self._offer_resume_session)
 
     # ------------------------------------------------------------------------------------
     # UI construction
@@ -223,9 +227,99 @@ class App(tk.Tk):
         widget.bind("<Leave>", hide)
 
     # ------------------------------------------------------------------------------------
-    # Live Google Sheet export
+    # Crash recovery: periodically save enough state to resume where we left
+    # off (race mode/round, teams file, output folder, and every authorized
+    # passage recorded so far) if the app is killed/crashes instead of being
+    # closed cleanly. _on_close() removes the file on a normal exit.
     # ------------------------------------------------------------------------------------
-    def _ensure_gsheet_round_tab(self):
+    def _save_session_state(self):
+        try:
+            with self._tags_lock:
+                passages = {code.hex(): ts for code, ts in self.first_seen_allowed.items()}
+            state = {
+                "race_mode": self.race_mode_var.get(),
+                "round": self.round_var.get(),
+                "teams_file_path": self.teams_file_path,
+                "output_dir_path": self.output_dir_path,
+                "race_csv_path": self.race_csv_path,
+                "in_inventory": self.in_inventory,
+                "first_seen_allowed": passages,
+            }
+            tmp_path = SESSION_STATE_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+            os.replace(tmp_path, SESSION_STATE_FILE)
+        except Exception:
+            pass  # best-effort only — never let this interrupt the race
+
+    def _clear_session_state(self):
+        try:
+            if os.path.isfile(SESSION_STATE_FILE):
+                os.remove(SESSION_STATE_FILE)
+        except OSError:
+            pass
+
+    def _offer_resume_session(self):
+        """At startup: if a session_state.json is present, a previous run
+        didn't shut down cleanly (crash/kill). Offer to restore it."""
+        if not os.path.isfile(SESSION_STATE_FILE):
+            return
+        try:
+            with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            self._clear_session_state()
+            return
+
+        passages = state.get("first_seen_allowed") or {}
+        was_running = state.get("in_inventory")
+        summary = (
+            f"A previous session did not close cleanly.\n\n"
+            f"Mode: {state.get('race_mode') or '(none)'}   Round: {state.get('round') or '?'}\n"
+            f"Passages recorded: {len(passages)}\n"
+            f"Was running: {'yes' if was_running else 'no'}\n\n"
+            f"Resume this session?"
+        )
+        if not messagebox.askyesno(self.title(), summary):
+            self._clear_session_state()
+            return
+
+        if state.get("race_mode") in ("start_line", "finish_line"):
+            self.race_mode_var.set(state["race_mode"])
+        if state.get("round"):
+            self.round_var.set(state["round"])
+        if state.get("output_dir_path"):
+            self.output_dir_path = state["output_dir_path"]
+        if state.get("teams_file_path") and os.path.isfile(state["teams_file_path"]):
+            try:
+                self._load_teams_file(state["teams_file_path"])
+                self._set_button_color(self.btn_teams_file, True)
+            except Exception as ex:
+                self.write_log(MessageType.Warning, "Could not reload teams.csv from the previous session", ex)
+
+        with self._tags_lock:
+            for hex_code, ts in passages.items():
+                self.first_seen_allowed[bytes.fromhex(hex_code)] = ts
+        self._show_tag()
+
+        # Reopen the same race CSV in append mode so passages keep landing in
+        # the same file rather than starting a new one.
+        race_csv_path = state.get("race_csv_path")
+        if race_csv_path and os.path.isfile(race_csv_path):
+            try:
+                self.race_csv_file = open(race_csv_path, "a", newline="", encoding="utf-8")
+                self.race_csv_writer = csv.writer(self.race_csv_file, delimiter=";")
+                self.race_csv_path = race_csv_path
+            except OSError as ex:
+                self.write_log(MessageType.Warning, "Could not reopen the previous race CSV", ex)
+
+        self.write_log(
+            MessageType.Info,
+            f"Previous session restored: {len(passages)} passage(s). "
+            f"Click Start to resume scanning (Start line/Finish line/Round already set).")
+        self._clear_session_state()  # the restored state is now live in memory; a fresh
+                                      # file will be written again on the next passage/Start
+
         """Best-effort: if the Google Sheet export is active, make sure this
         round's tab exists before the race starts (surfaces problems early
         instead of only on the first passage). Never blocks the race from
@@ -241,15 +335,56 @@ class App(tk.Tk):
         if self.gsheet_ready:
             messagebox.showinfo(self.title(), "Google Sheet export is already configured and active.")
             return
+        self._ensure_gsheet_ready(lambda: None)
+
+    def _ensure_gsheet_ready(self, then):
+        """Runs `then` once the Google Sheet connection is ready, connecting
+        first (including the Setup window, if credentials.json doesn't
+        exist yet) when needed. If already connecting, just queues `then`
+        to run once that finishes."""
+        self._gsheet_pending_action = then
+        if self.gsheet_ready:
+            action, self._gsheet_pending_action = self._gsheet_pending_action, None
+            action()
+            return
         if self.gsheet_connecting:
             return
-
         creds_path = gsheet_export.credentials_path_for(DEFAULT_GOOGLE_DIR)
         if not os.path.isfile(creds_path):
             self._open_gsheet_setup_window(creds_path)
-            return
+        else:
+            self._start_gsheet_connect()
 
-        self._start_gsheet_connect()
+    def on_export_results_to_gsheet(self):
+        if not self._results_rows:
+            messagebox.showinfo(
+                self.title(),
+                "No results to export yet — open Results and select the "
+                "start_line/finish_line files first.")
+            return
+        self._ensure_gsheet_ready(self._push_full_results_now)
+
+    def _push_full_results_now(self):
+        round_num = self._get_round_number()
+        rows = list(self._results_rows)
+
+        def worker():
+            try:
+                self.gsheet_exporter.push_full_results(round_num, rows)
+                self.ui_queue.put(("gsheet_full_export_done", round_num, len(rows)))
+            except Exception as ex:
+                self.ui_queue.put(("gsheet_full_export_failed", str(ex)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_gsheet_full_export_done_ui(self, round_num: int, count: int):
+        msg = f"Results exported to Google Sheet (Round {round_num}, {count} row(s))"
+        self.write_log(MessageType.Info, msg)
+        messagebox.showinfo(self.title(), msg)
+
+    def _on_gsheet_full_export_failed_ui(self, message: str):
+        self.write_log(MessageType.Error, "Export to Google Sheet failed", message)
+        messagebox.showinfo(self.title(), f"Export to Google Sheet failed:\n{message}")
 
     def _open_gsheet_setup_window(self, creds_path: str):
         win = tk.Toplevel(self)
@@ -341,6 +476,10 @@ class App(tk.Tk):
                             f"previous session will be re-sent automatically.")
         self._gsheet_retry_tick()  # starts the recurring background retry loop
 
+        action, self._gsheet_pending_action = self._gsheet_pending_action, None
+        if action:
+            action()
+
     def _gsheet_retry_tick(self):
         """Every 15s while connected: if passages are queued (no internet
         earlier), try to resend them in a background thread so a real
@@ -365,6 +504,7 @@ class App(tk.Tk):
     def _on_gsheet_failed_ui(self, message: str):
         self.gsheet_connecting = False
         self.gsheet_exporter = None
+        self._gsheet_pending_action = None
         self.btn_gsheet.configure(state="normal", text="Export live Google Sheet")
         self._set_button_color(self.btn_gsheet, False)
         self.write_log(MessageType.Error, "Google Sheet connection failed: ", message)
@@ -450,6 +590,10 @@ class App(tk.Tk):
         self.btn_gsheet = tk.Button(bottom_band, text="Export live Google Sheet", width=24,
                                      command=self.on_gsheet_button_click)
         self.btn_gsheet.pack(side=tk.RIGHT, padx=4)
+        self.btn_export_results_gsheet = tk.Button(
+            bottom_band, text="Export to Google Sheet", width=22,
+            command=self.on_export_results_to_gsheet)
+        self.btn_export_results_gsheet.pack(side=tk.RIGHT, padx=4)
         self.btn_toggle_results = tk.Button(bottom_band, text="Results", width=14,
                                              command=lambda: self._toggle_popup(self.results_window))
         self.btn_toggle_results.pack(side=tk.RIGHT, padx=4)
@@ -708,6 +852,10 @@ class App(tk.Tk):
                     self._on_gsheet_failed_ui(item[1])
                 elif kind == "gsheet_retry_result":
                     self._on_gsheet_retry_result_ui(item[1])
+                elif kind == "gsheet_full_export_done":
+                    self._on_gsheet_full_export_done_ui(item[1], item[2])
+                elif kind == "gsheet_full_export_failed":
+                    self._on_gsheet_full_export_failed_ui(item[1])
         except queue.Empty:
             pass
         self.after(80, self._pump_queue)
@@ -1237,11 +1385,13 @@ class App(tk.Tk):
                     self.inv_time_ms = int((time.time() - self.inv_start_tick) * 1000) + 1
 
                     # Log of authorized tags: only the very first passage
+                    new_passage_recorded = False
                     if (self.allowed_codes is not None
                             and item.Code in self.allowed_codes
                             and item.Code not in self.first_seen_allowed):
                         ts = time.strftime("%Y-%m-%d %H:%M:%S")
                         self.first_seen_allowed[item.Code] = ts
+                        new_passage_recorded = True
                         if self.race_csv_writer is not None:
                             info = self.allowed_codes[item.Code]
                             try:
@@ -1273,6 +1423,8 @@ class App(tk.Tk):
                             except Exception as ex:
                                 self.write_log(MessageType.Error, "Google Sheet push failed", ex)
                 self._show_tag()
+                if new_passage_recorded:
+                    self._save_session_state()
             self._show_tag()
             self.ui_queue.put(("inventory_end",))
         except Exception as ex:
@@ -1354,6 +1506,7 @@ class App(tk.Tk):
                 self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
                 self.on_clear_allowed_log()
+                self._save_session_state()
 
                 self.devicepara.Workmode = self.cmb_workmode.current()
                 reader.set_device_para(self.devicepara)
@@ -1395,6 +1548,7 @@ class App(tk.Tk):
                 self._ensure_gsheet_round_tab()
                 self._lock_race_controls(True)
                 self.on_clear_allowed_log()
+                self._save_session_state()
 
                 self.devicepara.Workmode = self.cmb_workmode.current()
                 reader.set_device_para(self.devicepara)
@@ -1691,6 +1845,7 @@ class App(tk.Tk):
         self.is_closed = True
         self.stop_inventory = True
         self._stop_race_csv()
+        self._clear_session_state()  # clean exit: no crash recovery needed next time
         self.destroy()
 
 

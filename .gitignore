@@ -11,3 +11,6 @@ token.json
 # Offline retry queue for Google Sheet export — local runtime data, not code
 gsheet_pending.jsonl
 spreadsheet_id.txt
+
+# Crash-recovery snapshot — local runtime data, not code
+session_state.json

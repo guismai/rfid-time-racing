@@ -553,3 +553,33 @@ class GoogleSheetExporter:
             sent += 1
         return sent
 
+    # ------------------------------------------------------------------------------------
+    # One-shot batch export (used by the "Export to Google Sheet" button): pushes
+    # a whole computed Results table at once, instead of pushing live per-passage.
+    # ------------------------------------------------------------------------------------
+    def push_full_results(self, round_num: int, rows: list):
+        """Writes the full Results table (bib, team, start, finish, duration) to
+        the 'Round N' tab in a single batch call. Overwrites any existing
+        content in that tab's data rows. `rows` is a list of dicts with keys
+        bib, team, start, finish (as "%Y-%m-%d %H:%M:%S" strings or "") and
+        duration_seconds (float or None) — the same shape main_window.py's
+        Results view already computes."""
+        tab_name = self.ensure_round_tab(round_num)
+        sheet_id = self._sheet_ids[tab_name]
+
+        values = [HEADER_ROW]
+        for r in rows:
+            start_serial = _to_sheets_serial(r["start"]) if r.get("start") else ""
+            finish_serial = _to_sheets_serial(r["finish"]) if r.get("finish") else ""
+            duration_val = (
+                r["duration_seconds"] / 86400.0
+                if r.get("duration_seconds") is not None else ""
+            )
+            values.append([r.get("bib", ""), r.get("team", ""),
+                           start_serial, finish_serial, duration_val])
+
+        self._values_update(tab_name, f"A1:E{len(values)}", values, raw=True)
+        self._format_datetime_columns(tab_name, sheet_id)
+        print(f"[DEBUG] gsheet: batch-exported {len(rows)} result row(s) to {tab_name!r}",
+              file=sys.stderr)
+
