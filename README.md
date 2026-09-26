@@ -57,7 +57,7 @@ number against a teams list, and export the results.
 | `freq_info.py` | Small frequency-plan value object |
 | `tag_item.py` | Interop structs (`TagInfo`, `Devicepara`) and tag value objects |
 | `util.py` | Hex/decimal parsing, CRC16 |
-| `arch_check.py` | Warns at startup if Python isn't 32-bit (see below) |
+| `arch_check.py` | Warns at startup if Python isn't 64-bit (see below) |
 | `gsheet_export.py` | Google Sheets live export (OAuth + Sheets/Drive API) |
 | `lib/` | Bundled `UHFPrimeReader.dll` + `hidapi.dll` |
 | `icon.ico` | App icon |
@@ -69,9 +69,7 @@ The **Export live Google Sheet** button needs a one-time setup per Google
 account, since it can't create its own Google Cloud project on your
 behalf. No extra `pip install` is needed for this feature — it talks to
 Google's OAuth2 and REST APIs using only Python's standard library, so
-there's nothing to compile on any platform (including 32-bit Windows,
-where packages like `cryptography` often have no prebuilt wheel and
-would otherwise require a full MSVC/Rust toolchain just to install).
+there's nothing to compile on any platform.
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create
    (or pick) a project, then enable the **Google Sheets API** for it (no
@@ -110,16 +108,16 @@ bundled in `lib/` and loaded from there directly (`os.add_dll_directory`
 makes sure `UHFPrimeReader.dll` finds `hidapi.dll` alongside it) — no need
 to add anything to `PATH`.
 
-**Important: both DLLs, as supplied by Chafon for the CF561, are 32-bit
-(PE i386).** This only works on Windows,
-and only with a **32-bit ("x86") Python interpreter**, even on 64-bit
-Windows. With a 64-bit Python, `ctypes.WinDLL(...)` fails with *"%1 is not
-a valid Win32 application"*. On Linux/macOS the modules still import fine
-(the DLL load is lazy), but any action that needs the reader (OPEN,
-CONNECT, Scan USB, ...) raises a clear error instead of crashing.
+**Important: both DLLs, as supplied by Chafon for the CF561, are 64-bit
+(PE x64).** This only works on Windows,
+and only with a **64-bit ("x64") Python interpreter** — a plain 32-bit
+Python will fail with *"%1 is not a valid Win32 application"* when
+loading them via `ctypes.WinDLL(...)`. On Linux/macOS the modules still
+import fine (the DLL load is lazy), but any action that needs the reader
+(OPEN, CONNECT, Scan USB, ...) raises a clear error instead of crashing.
 
 At startup, `main.py` calls `arch_check.warn_if_wrong_architecture()`: if
-the interpreter isn't 32-bit on Windows, it shows a warning (console +
+the interpreter isn't 64-bit on Windows, it shows a warning (console +
 Tkinter dialog) before you even try to open the reader.
 
 ## Dependencies
@@ -146,10 +144,10 @@ python main.py
 self-contained `dist\RFID_Time_Racing.exe` (icon included), bundling
 `lib\UHFPrimeReader.dll`, `lib\hidapi.dll`, and `icon.ico`.
 
-1. Run it with the **same 32-bit Python** you use to talk to the reader —
+1. Run it with the **same 64-bit Python** you use to talk to the reader —
    the script checks the architecture and refuses to continue otherwise.
 2. It installs/upgrades PyInstaller, then builds the executable.
-3. The resulting `.exe` is standalone: it can be copied to another 32-bit-
+3. The resulting `.exe` is standalone: it can be copied to another 64-bit-
    DLL-compatible Windows machine without needing Python installed there.
 
 By default the build keeps a console window next to the app (so you still

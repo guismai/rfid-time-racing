@@ -2,21 +2,21 @@
 REM Builds a standalone RFID_Time_Racing.exe with PyInstaller.
 REM
 REM IMPORTANT: run this with the SAME Python you use to talk to the reader
-REM (must be 32-bit / x86, matching lib\UHFPrimeReader.dll and lib\hidapi.dll).
-REM PyInstaller cannot cross-build: a 32-bit Python produces a 32-bit exe,
-REM a 64-bit Python would produce a 64-bit exe that can't load those DLLs.
+REM (must be 64-bit / x64, matching lib\UHFPrimeReader.dll and lib\hidapi.dll).
+REM PyInstaller cannot cross-build: a 64-bit Python produces a 64-bit exe,
+REM a 32-bit Python would produce a 32-bit exe that can't load those DLLs.
 REM
 REM Usage: double-click this file, or run it from a command prompt in this
 REM        folder: build_exe.bat
 
-python -c "import struct,sys; bits=struct.calcsize('P')*8; print('Python bits:', bits); sys.exit(0 if bits==32 else 1)"
+python -c "import struct,sys; bits=struct.calcsize('P')*8; print('Python bits:', bits); sys.exit(0 if bits==64 else 1)"
 if errorlevel 1 (
     echo.
-    echo ERROR: this Python is not 32-bit. Re-run this script using your
-    echo 32-bit Python interpreter ^(the one that already works with the
+    echo ERROR: this Python is not 64-bit. Re-run this script using a
+    echo 64-bit Python interpreter ^(the one that already works with the
     echo reader^), e.g.:
-    echo     C:\path\to\python32\python.exe -m pip install --upgrade pyinstaller
-    echo     C:\path\to\python32\python.exe -m PyInstaller ...
+    echo     C:\path\to\python64\python.exe -m pip install --upgrade pyinstaller
+    echo     C:\path\to\python64\python.exe -m PyInstaller ...
     echo or edit this .bat to point "python" at that interpreter.
     pause
     exit /b 1

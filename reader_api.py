@@ -5,8 +5,8 @@ works on Windows, with UHFPrimeReader.dll (and its hidapi.dll dependency)
 next to the executable or on PATH.
 
 The physical RFID reader this talks to is a Chafon CF561 UHF reader module.
-Both DLLs are supplied by Chafon and are 32-bit, so this only works with a
-32-bit ("x86") Python interpreter (see the architecture note below).
+Both DLLs are supplied by Chafon and are 64-bit, so this only works with a
+64-bit ("x64") Python interpreter (see the architecture note below).
 
 `Reader` is a thin, Pythonic wrapper around those calls.
 """
@@ -59,9 +59,9 @@ class API:
             if hasattr(os, "add_dll_directory"):  # Python 3.8+ on Windows
                 os.add_dll_directory(_LIB_DIR)
             # Both DLLs shipped here (as supplied by Chafon for the CF561)
-            # are 32-bit (PE i386) — this process must be running a 32-bit
-            # ("x86") Python interpreter for the load below to succeed; a
-            # 64-bit interpreter will raise OSError "%1 is not a valid
+            # are 64-bit (PE x64) — this process must be running a 64-bit
+            # ("x64") Python interpreter for the load below to succeed; a
+            # 32-bit interpreter will raise OSError "%1 is not a valid
             # Win32 application" (WinError 193). See arch_check.py for the
             # proactive startup warning.
             #
@@ -84,10 +84,10 @@ class API:
                 if getattr(ex, "winerror", None) == 193 or "193" in str(ex):
                     from arch_check import get_python_bits
                     raise OSError(
-                        f"Impossible de charger UHFPrimeReader.dll (WinError 193) : "
-                        f"cette DLL est compilee en 32 bits, mais l'interpreteur "
-                        f"Python actuel est en {get_python_bits()} bits. Utilisez un "
-                        f"Python 32 bits (x86) pour piloter le lecteur."
+                        f"Could not load UHFPrimeReader.dll (WinError 193): "
+                        f"this DLL is compiled as 64-bit, but the current "
+                        f"Python interpreter is {get_python_bits()}-bit. Use a "
+                        f"64-bit Python (x64) to drive the reader."
                     ) from ex
                 raise
             cls._declare_signatures(cls._dll)
