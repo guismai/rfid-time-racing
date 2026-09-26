@@ -39,9 +39,8 @@ echo Done. The executable is in dist\RFID_Time_Racing.exe
 echo (You can delete the build\ folder and *.spec file afterwards, they are
 echo  just PyInstaller's intermediate build artifacts.)
 echo.
-echo NOTE: credentials.json / token.json (Google Sheet export) are NOT bundled
-echo into the exe on purpose - they are personal secrets. If you use the
-echo "Export live Google Sheet" button, copy credentials.json next to
-echo dist\RFID_Time_Racing.exe yourself; token.json will be created there
-echo after the first successful sign-in.
+echo NOTE: credentials.json / token.json (Google Sheet export) are stored in
+echo Desktop\RFID Time Racing\Google, not bundled into or next to the exe -
+echo they are personal secrets. The "Google Sheet Setup" window creates
+echo credentials.json for you there; token.json appears after sign-in.
 pause

@@ -83,10 +83,10 @@ would otherwise require a full MSVC/Rust toolchain just to install).
    exists yet, a **"Google Sheet Setup"** window opens with buttons that
    jump straight to the right Cloud Console pages, and two fields for the
    Client ID / Client Secret. Click **Save & Connect** — the app writes
-   `credentials.json` for you, then a browser window opens asking you to
-   sign in and grant access (PKCE authorization-code flow). The resulting
-   token is cached in `token.json` next to it, so this only happens once
-   per machine.
+   `credentials.json` to `Desktop\RFID Time Racing\Google\`, then a browser
+   window opens asking you to sign in and grant access (PKCE
+   authorization-code flow). The resulting token is cached in `token.json`
+   next to it, so this only happens once per machine.
 
 Once connected, a spreadsheet named **"RFID Time Racing"** is created (if
 it doesn't already exist) at the root of your Drive, with one tab per
@@ -96,11 +96,10 @@ writes the *Start* column for a bib, a finish-line station only the
 itself once both are present — so two independent stations (even on
 different computers) merge correctly without stepping on each other.
 
-`credentials.json` and `token.json` are personal secrets — they're already
-excluded via `.gitignore` and must never be committed or shared. When
-running as the built `.exe`, both files live next to the `.exe` itself
-(never inside PyInstaller's temporary extraction folder, which is wiped on
-every launch).
+`credentials.json` and `token.json` are personal secrets, stored in
+`Desktop\RFID Time Racing\Google\` (created automatically at startup along
+with `Results\` and `Teams\`) — never bundled into the `.exe` and already
+excluded via `.gitignore`.
 
 ## The reader DLL
 

@@ -57,11 +57,12 @@ DEFAULT_APP_DIR = os.path.join(DESKTOP_DIR, "RFID Time Racing")
 DEFAULT_RESULTS_DIR = os.path.join(DEFAULT_APP_DIR, "Results")
 DEFAULT_TEAMS_DIR = os.path.join(DEFAULT_APP_DIR, "Teams")
 DEFAULT_TEAMS_FILE = os.path.join(DEFAULT_TEAMS_DIR, "default.csv")
+DEFAULT_GOOGLE_DIR = os.path.join(DEFAULT_APP_DIR, "Google")
 
 
 def _ensure_default_folders():
-    """Creates Desktop/RFID Time Racing/{Results,Teams} if they don't exist yet."""
-    for path in (DEFAULT_APP_DIR, DEFAULT_RESULTS_DIR, DEFAULT_TEAMS_DIR):
+    """Creates Desktop/RFID Time Racing/{Results,Teams,Google} if they don't exist yet."""
+    for path in (DEFAULT_APP_DIR, DEFAULT_RESULTS_DIR, DEFAULT_TEAMS_DIR, DEFAULT_GOOGLE_DIR):
         try:
             os.makedirs(path, exist_ok=True)
         except OSError:
@@ -243,7 +244,7 @@ class App(tk.Tk):
         if self.gsheet_connecting:
             return
 
-        creds_path = gsheet_export.credentials_path_for(_PERSIST_DIR)
+        creds_path = gsheet_export.credentials_path_for(DEFAULT_GOOGLE_DIR)
         if not os.path.isfile(creds_path):
             self._open_gsheet_setup_window(creds_path)
             return
@@ -314,7 +315,7 @@ class App(tk.Tk):
 
         def worker():
             try:
-                exporter = GoogleSheetExporter(_PERSIST_DIR)
+                exporter = GoogleSheetExporter(DEFAULT_GOOGLE_DIR)
                 exporter.connect()  # blocking: opens the browser for sign-in if needed
                 self.gsheet_exporter = exporter
                 self.ui_queue.put(("gsheet_connected",))
