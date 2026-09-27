@@ -238,6 +238,17 @@ class App(tk.Tk):
         try:
             with self._tags_lock:
                 passages = {code.hex(): ts for code, ts in self.first_seen_allowed.items()}
+                captured = [
+                    {
+                        "code": sitem.code.hex(),
+                        "len": sitem.len,
+                        "counts": list(sitem.counts),
+                        "rssi": sitem.rssi,
+                        "channel": sitem.channel,
+                        "team": self.capture_team.get(sitem.code, ""),
+                    }
+                    for sitem in self.tags_ordered
+                ]
             state = {
                 "race_mode": self.race_mode_var.get(),
                 "round": self.round_var.get(),
@@ -246,6 +257,7 @@ class App(tk.Tk):
                 "race_csv_path": self.race_csv_path,
                 "in_inventory": self.in_inventory,
                 "first_seen_allowed": passages,
+                "captured_tags": captured,
             }
             tmp_path = SESSION_STATE_FILE + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -274,11 +286,13 @@ class App(tk.Tk):
             return
 
         passages = state.get("first_seen_allowed") or {}
+        captured = state.get("captured_tags") or []
         was_running = state.get("in_inventory")
         summary = (
             f"A previous session did not close cleanly.\n\n"
             f"Mode: {state.get('race_mode') or '(none)'}   Round: {state.get('round') or '?'}\n"
             f"Passages recorded: {len(passages)}\n"
+            f"Tags scanned: {len(captured)}\n"
             f"Was running: {'yes' if was_running else 'no'}\n\n"
             f"Resume this session?"
         )
@@ -302,6 +316,24 @@ class App(tk.Tk):
         with self._tags_lock:
             for hex_code, ts in passages.items():
                 self.first_seen_allowed[bytes.fromhex(hex_code)] = ts
+            for entry in captured:
+                try:
+                    code = bytes.fromhex(entry["code"])
+                    sitem = ShowTagItem(
+                        pc=b"\x00\x00", code=code, rssi=entry.get("rssi", 0),
+                        ant=1, channel=entry.get("channel", 0), crc=b"\x00\x00",
+                        length=entry.get("len", len(code)),
+                    )
+                    counts = entry.get("counts")
+                    if counts and len(counts) == 4:
+                        sitem.counts = list(counts)
+                    self.tags[code] = sitem
+                    self.tags_ordered.append(sitem)
+                    team = entry.get("team")
+                    if team:
+                        self.capture_team[code] = team
+                except Exception as ex:
+                    self.write_log(MessageType.Warning, "Could not restore one scanned tag", ex)
         self._show_tag()
 
         # Reopen the same race CSV in append mode so passages keep landing in
@@ -317,7 +349,7 @@ class App(tk.Tk):
 
         self.write_log(
             MessageType.Info,
-            f"Previous session restored: {len(passages)} passage(s). "
+            f"Previous session restored: {len(passages)} passage(s), {len(captured)} scanned tag(s). "
             f"Click Start to resume scanning (Start line/Finish line/Round already set).")
         self._clear_session_state()  # the restored state is now live in memory; a fresh
                                       # file will be written again on the next passage/Start
@@ -1395,6 +1427,7 @@ class App(tk.Tk):
             self.capture_team[code] = entry.get().strip()
             entry.destroy()
             self._show_tag_ui()
+            self._save_session_state()
 
         def cancel(_event=None):
             if entry.winfo_exists():
@@ -1456,12 +1489,14 @@ class App(tk.Tk):
 
                 with self._tags_lock:
                     sitem = self.tags.get(item.Code)
+                    new_tag_scanned = False
                     if sitem is not None:
                         sitem.inc_count(item)
                     else:
                         sitem = ShowTagItem(item=item)
                         self.tags[item.Code] = sitem
                         self.tags_ordered.append(sitem)
+                        new_tag_scanned = True
                     self.inv_tag_count += 1
                     self.inv_time_ms = int((time.time() - self.inv_start_tick) * 1000) + 1
 
@@ -1504,7 +1539,7 @@ class App(tk.Tk):
                             except Exception as ex:
                                 self.write_log(MessageType.Error, "Google Sheet push failed", ex)
                 self._show_tag()
-                if new_passage_recorded:
+                if new_passage_recorded or new_tag_scanned:
                     self._save_session_state()
             self._show_tag()
             self.ui_queue.put(("inventory_end",))
