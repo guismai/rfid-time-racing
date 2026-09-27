@@ -1298,6 +1298,22 @@ class App(tk.Tk):
                 pass
         except Exception:
             pass
+
+    def _stop_inventory_command(self, reader):
+        """Sends the InventoryStop command. Some firmware/DLL combinations
+        (seen with a newer 64-bit UHFPrimeReader.dll in Answer mode) return
+        ERROR_CMD_COMM_READ_FAILED here even though the reader stays fully
+        usable afterward (confirmed: the next Start works fine) — so that
+        specific error is logged as a warning rather than shown as a
+        blocking error to the user. Any other error still propagates."""
+        try:
+            reader.inventory_stop(STOP_INVENTORY_TIMEOUT_MS)
+        except ReaderException as ex:
+            if ex.error_code == ReaderException.ERROR_CMD_COMM_READ_FAILED:
+                self.write_log(MessageType.Warning,
+                                "InventoryStop reported a read error (harmless, reader stays usable): ", ex)
+            else:
+                raise
         self.ui_queue.put(("inventory_end",))
 
     def _update_page_index(self):
@@ -1549,7 +1565,7 @@ class App(tk.Tk):
                 if self.in_inventory:
                     self.stop_inventory = True
                     self._close_inventory_thread()
-                    reader.inventory_stop(STOP_INVENTORY_TIMEOUT_MS)
+                    self._stop_inventory_command(reader)
                     self.btn_inventory.configure(state="normal")
                     self.btn_inventory_capture.configure(state="normal")
                     self._set_start_button_color(False)
@@ -1646,7 +1662,7 @@ class App(tk.Tk):
                 self.stop_inventory = True
                 self._close_inventory_thread()
                 if self.devicepara.Workmode == 0:
-                    reader.inventory_stop(STOP_INVENTORY_TIMEOUT_MS)
+                    self._stop_inventory_command(reader)
                 self.btn_inventory.configure(state="normal")
                 self.btn_inventory_capture.configure(state="normal")
                 self._set_start_button_color(False)
