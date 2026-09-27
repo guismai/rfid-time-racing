@@ -342,6 +342,8 @@ class Reader:
         if self._state == 0:
             raise RuntimeError("Reader is not open")
         state = API.SetDevicePara(self._handler, info)
+        print(f"[DEBUG] SetDevicePara(handle={self._handler}, workmode={info.Workmode}) "
+              f"-> state={state}", file=sys.stderr)
         if state == ReaderException.ERROR_SUCCESS:
             return
         raise ReaderException(state)
@@ -374,6 +376,8 @@ class Reader:
         if self._state == 0:
             raise RuntimeError("Reader is not open")
         state = API.InventoryContinue(self._handler, inv_count, inv_param)
+        print(f"[DEBUG] InventoryContinue(handle={self._handler}, inv_count={inv_count}, "
+              f"inv_param={inv_param}) -> state={state}", file=sys.stderr)
         if state == ReaderException.ERROR_SUCCESS:
             return
         raise ReaderException(state)
@@ -382,6 +386,8 @@ class Reader:
         if self._state == 0:
             raise RuntimeError("Reader is not open")
         state = API.InventoryStop(self._handler, timeout_ms)
+        print(f"[DEBUG] InventoryStop(handle={self._handler}, timeout_ms={timeout_ms}) "
+              f"-> state={state}", file=sys.stderr)
         if state == ReaderException.ERROR_SUCCESS:
             return
         raise ReaderException(state)
@@ -391,6 +397,9 @@ class Reader:
         if self._state == 0:
             raise RuntimeError("Reader is not open")
         state, info = API.GetTagUii(self._handler, timeout_ms)
+        if state not in (ReaderException.ERROR_CMD_NO_TAG, ReaderException.ERROR_SUCCESS):
+            print(f"[DEBUG] GetTagUii(handle={self._handler}, timeout_ms={timeout_ms}) "
+                  f"-> state={state}", file=sys.stderr)
         if state == ReaderException.ERROR_CMD_NO_TAG:
             return None
         if state == ReaderException.ERROR_SUCCESS:

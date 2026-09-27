@@ -916,7 +916,7 @@ class App(tk.Tk):
             self.reader.cfhid_get_usb_info(index, buffer)
             sn = buffer.decode("utf-8", errors="ignore").replace("\x00", "")
             flag = sn[-3:] if len(sn) >= 3 else sn
-            label = "\\Keyboard-can'topen" if flag == "kbd" else "\\USB-open"
+            label = "\\Keyboard-can'topen" if flag.lower() == "kbd" else "\\USB-open"
             values.append(label)
             print(f"[DEBUG] ScanUSB: index={index} raw_sn={sn!r} -> {label}", file=sys.stderr)
         self.cbx_usb_path["values"] = values
